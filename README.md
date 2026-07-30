@@ -42,7 +42,7 @@ simply ignored, so requests silently lose that behavior.
 
 | | |
 |---|---|
-| Base | `amazoncorretto:17-al2023-headless` (Amazon Linux 2023 + Corretto 17) |
+| Base | `amazoncorretto:8-al2023-jre` (Amazon Linux 2023 + Corretto 8) |
 | Servlet container | Apache Tomcat 9.0.120, copied from the official `tomcat` image |
 | Runs as | uid/gid `10001`, non-root |
 | Validator | `referenceccdaservice.war` v1.1.4, downloaded and sha256-verified at build time |
@@ -57,8 +57,15 @@ docker build --build-arg VALIDATOR_VERSION=v1.1.4 \
              -t docker-ccda-validator .
 ```
 
-Tomcat 9 is deliberate: the validator WAR is built against `javax.servlet`, so
-Tomcat 10+ (which moved to `jakarta.servlet`) will not run it.
+Two version choices are deliberate:
+
+- **Tomcat 9** — the WAR is built against `javax.servlet`, so Tomcat 10+ (which
+  moved to `jakarta.servlet`) will not run it.
+- **Java 8** — the only JDK upstream supports for this validator. It is not a
+  dead end: AWS lists Corretto 8's last planned update as October 2030, later
+  than Corretto 11. Newer JDKs do run (Corretto 17 was tested and produced an
+  identical finding set), but they are unsupported by upstream, and Java 11+
+  removes `javax.xml.bind`, which this app needs.
 
 ### Upgrading the validator
 
@@ -76,9 +83,9 @@ bump:
    `configuration/referenceccdaservice.xml` at the matching tag for new
    parameters.
 
-Upstream states it does not support any JDK above 8. This image runs Java 17
-anyway, so re-run a real validation after every bump rather than trusting a
-successful startup.
+Re-run a real validation after every bump rather than trusting a successful
+startup — the app deploys and serves its UI fine in states where the validators
+themselves are misconfigured.
 
 ## Pushing to ECR
 

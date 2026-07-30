@@ -1,21 +1,30 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Base image: Amazon Linux 2023 + Amazon Corretto (headless).
+# Base image: Amazon Linux 2023 + Amazon Corretto 8 (JRE).
 #
 # Why this one:
 #   * ECR can actually scan it. AL2023 is a supported OS for both ECR basic
 #     scanning (Clair) and ECR enhanced scanning (Amazon Inspector). The old
 #     fedora:21 base was on neither list, so ECR reported UNSUPPORTED_IMAGE:
 #     zero findings, which is not the same thing as zero vulnerabilities.
-#   * Small footprint: ~130 rpms, and no wget/tar/unzip/perl/git in the
-#     runtime layer. AWS publishes ALAS security updates for AL2023 into 2028.
+#   * Small footprint: ~135 rpms, and no wget/tar/unzip/perl/git in the runtime
+#     layer. The -jre variant saves 60MB over the JDK and Tomcat only needs a
+#     JRE (Jasper compiles JSPs with the ecj bundled in $CATALINA_HOME/lib).
+#     AWS publishes ALAS security updates for AL2023 into 2028.
 #   * Distroless / Chainguard / Wolfi bases would be leaner still, but ECR
 #     cannot enumerate their packages, which fails the scannability goal.
 # ---------------------------------------------------------------------------
-ARG JAVA_VERSION=17
+# Java 8 because that is the only JDK upstream supports for this validator, and
+# a certification-adjacent tool is the wrong place to run unsupported. It costs
+# nothing in maintenance runway: AWS lists Corretto 8's last planned update as
+# October 2030 (EOL December 2030), later than Corretto 11.
+#
+# JAVA_VERSION and BASE_IMAGE move together -- the Corretto tag suffix differs
+# per line (8 publishes -jre, 11/17/21 publish -headless).
+ARG JAVA_VERSION=8
+ARG BASE_IMAGE=amazoncorretto:8-al2023-jre
 ARG TOMCAT_VERSION=9.0.120
-ARG BASE_IMAGE=amazoncorretto:${JAVA_VERSION}-al2023-headless
 
 # --- Apache Tomcat, used only as a file source ------------------------------
 # $CATALINA_HOME is pure Java, so it copies cleanly onto any base or arch.
@@ -53,12 +62,11 @@ COPY submodules/code-validator-api/codevalidator-api/docs/ValueSetsHandCreatedby
 RUN mkdir -p ccda/files/validator_configuration/vocabulary/code_repository \
              ccda/files/validator_configuration/scenarios_directory
 
-# NOTE on JAXB: the JDK dropped javax.xml.bind in Java 11, which broke this app
-# at 1.0.63 (NoClassDefFoundError: javax/xml/bind/JAXBException from Hibernate).
-# As of v1.1.4 the WAR bundles the whole JAXB stack in WEB-INF/lib, so nothing
-# needs adding here. If a future WAR drops those jars again, put jaxb-api,
-# jaxb-runtime, txw2, istack-commons-runtime and javax.activation in
-# $CATALINA_HOME/lib rather than downgrading to Java 8.
+# NOTE if you ever raise JAVA_VERSION: the JDK dropped javax.xml.bind in Java
+# 11, and this app needs it (Hibernate threw NoClassDefFoundError:
+# javax/xml/bind/JAXBException on 1.0.63 under Java 17). v1.1.4 happens to
+# bundle the whole JAXB stack in WEB-INF/lib so it survives, but that is the
+# WAR's choice to reverse, not a guarantee. On Java 8 the JDK provides it.
 
 # Add the CorsFilter to Tomcat's own conf/web.xml rather than replacing the
 # whole file — see files/config_extra/cors-filter.xml for why.
