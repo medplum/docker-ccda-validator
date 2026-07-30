@@ -1,0 +1,25 @@
+  <!--
+    Spliced into Tomcat's stock conf/web.xml at image build time.
+
+    This repo used to ship a full replacement conf/web.xml purely to add this
+    filter. That copy was a Tomcat 8-era default, so installing it on Tomcat 9
+    silently dropped httpHeaderSecurityFilter and froze the mime-type table.
+
+    NOTE: CorsFilter defaults to cors.allowed.origins=*, so any site can POST
+    a C-CDA here and read the result. Uncomment and narrow the init-param
+    below if this validator is reachable from outside a trusted network.
+  -->
+  <filter>
+    <filter-name>CorsFilter</filter-name>
+    <filter-class>org.apache.catalina.filters.CorsFilter</filter-class>
+    <!--
+    <init-param>
+      <param-name>cors.allowed.origins</param-name>
+      <param-value>https://example.internal</param-value>
+    </init-param>
+    -->
+  </filter>
+  <filter-mapping>
+    <filter-name>CorsFilter</filter-name>
+    <url-pattern>/*</url-pattern>
+  </filter-mapping>

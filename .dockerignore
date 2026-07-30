@@ -1,0 +1,12 @@
+# Keep the build context small: only files/ and the code-validator-api
+# spreadsheets are actually COPYed.
+**/.git
+.gitmodules
+*.md
+conf/
+log/
+webapps/
+submodules/reference-ccda-validator/
+submodules/code-validator-api/src/
+submodules/code-validator-api/codevalidator-api/src/
+submodules/code-validator-api/codevalidator-api/target/
