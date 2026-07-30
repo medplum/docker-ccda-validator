@@ -33,6 +33,11 @@ http://SERVER_IP:8080/referenceccdaservice/static/validationui.html
 http://SERVER_IP:8080/referenceccdaservice/swagger-ui.html#/reference-ccda-validation-controller
 ![swagger-ui](https://i.imgur.com/1OdtDyg.png)
 
+**Breaking API change in v1.1.4:** the `POST /referenceccdaservice/` form
+parameter `curesUpdate` (boolean) is gone, replaced by an optional `ccdaType`
+string. Callers still sending `curesUpdate` will not error — the parameter is
+simply ignored, so requests silently lose that behavior.
+
 ## The image
 
 | | |
@@ -40,13 +45,13 @@ http://SERVER_IP:8080/referenceccdaservice/swagger-ui.html#/reference-ccda-valid
 | Base | `amazoncorretto:17-al2023-headless` (Amazon Linux 2023 + Corretto 17) |
 | Servlet container | Apache Tomcat 9.0.120, copied from the official `tomcat` image |
 | Runs as | uid/gid `10001`, non-root |
-| Validator | `referenceccdaservice.war` 1.0.63, downloaded and sha256-verified at build time |
+| Validator | `referenceccdaservice.war` v1.1.4, downloaded and sha256-verified at build time |
 
 Versions are build args, so they can be overridden without editing the
 Dockerfile:
 
 ```
-docker build --build-arg VALIDATOR_VERSION=1.0.63 \
+docker build --build-arg VALIDATOR_VERSION=v1.1.4 \
              --build-arg VALIDATOR_WAR_SHA256=<sha256 of that war> \
              --build-arg TOMCAT_VERSION=9.0.120 \
              -t docker-ccda-validator .
@@ -55,8 +60,25 @@ docker build --build-arg VALIDATOR_VERSION=1.0.63 \
 Tomcat 9 is deliberate: the validator WAR is built against `javax.servlet`, so
 Tomcat 10+ (which moved to `jakarta.servlet`) will not run it.
 
-`files/jaxb/` restores `javax.xml.bind`, which the JDK dropped in Java 11 but
-the WAR's Hibernate 5.0.7 still needs.
+### Upgrading the validator
+
+Upstream moved to
+[onc-healthit/reference-ccda-validator](https://github.com/onc-healthit/reference-ccda-validator)
+and its tags now carry a `v` prefix. Three things move together on a version
+bump:
+
+1. `VALIDATOR_VERSION` and `VALIDATOR_WAR_SHA256` in the Dockerfile.
+2. `files/configs_folder/ccdaReferenceValidatorConfig.xml` — this ships
+   *separately* from the WAR and is versioned with it, so a stale copy silently
+   validates against the wrong expressions. Refresh it from
+   `configuration/ccdaReferenceValidatorConfig.xml` at the matching tag.
+3. `files/config_extra/referenceccdaservice.xml` — compare against
+   `configuration/referenceccdaservice.xml` at the matching tag for new
+   parameters.
+
+Upstream states it does not support any JDK above 8. This image runs Java 17
+anyway, so re-run a real validation after every bump rather than trusting a
+successful startup.
 
 ## Pushing to ECR
 

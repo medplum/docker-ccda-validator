@@ -28,42 +28,37 @@ FROM tomcat:${TOMCAT_VERSION}-jdk${JAVA_VERSION}-corretto AS tomcat-dist
 # here. The runtime image receives only finished artifacts.
 FROM ${BASE_IMAGE} AS build
 
-ARG VALIDATOR_VERSION=1.0.63
-ARG VALIDATOR_WAR_SHA256=6388e3cb422b7e779bacbd104c21cb293a2de235f79e944c125fd392e0e85a59
+# The upstream project moved from siteadmin/ to onc-healthit/ and its release
+# tags picked up a "v" prefix along the way.
+ARG VALIDATOR_REPO=onc-healthit/reference-ccda-validator
+ARG VALIDATOR_VERSION=v1.1.4
+ARG VALIDATOR_WAR_SHA256=c790ebd283181a9e9fa9e67d345690792fb16fa2f55a0efffaf6a4cd371be858
 
 WORKDIR /staging
 
 RUN curl -fsSL -o referenceccdaservice.war \
-      "https://github.com/siteadmin/reference-ccda-validator/releases/download/${VALIDATOR_VERSION}/referenceccdaservice.war" \
+      "https://github.com/${VALIDATOR_REPO}/releases/download/${VALIDATOR_VERSION}/referenceccdaservice.war" \
  && printf '%s  referenceccdaservice.war\n' "${VALIDATOR_WAR_SHA256}" | sha256sum -c -
 
 # Validator config tree, laid out where config_extra/referenceccdaservice.xml
 # points. code_repository and scenarios_directory are read at startup, so they
 # have to exist even while empty.
+#
+# configs_folder/ccdaReferenceValidatorConfig.xml is versioned with the WAR and
+# ships separately from it, so it has to be refreshed from
+# configuration/ccdaReferenceValidatorConfig.xml on every VALIDATOR_VERSION bump.
 COPY files/configs_folder/ ccda/files/configs_folder/
 COPY submodules/code-validator-api/codevalidator-api/docs/ValueSetsHandCreatedbySITE/ \
      ccda/files/validator_configuration/vocabulary/valueset_repository/VSAC/
 RUN mkdir -p ccda/files/validator_configuration/vocabulary/code_repository \
              ccda/files/validator_configuration/scenarios_directory
 
-# Java 11 dropped JAXB from the JDK, but this app's Hibernate 5.0.7 still
-# expects javax.xml.bind (without these it dies at startup on
-# NoClassDefFoundError: javax/xml/bind/JAXBException). Restoring the five jars
-# is preferable to pinning the image to Java 8, whose Corretto support window
-# is nearly closed. Checksums are pinned in files/jaxb/jaxb.sha256; bump both
-# together.
-ARG MAVEN_REPO=https://repo1.maven.org/maven2
-COPY files/jaxb/jaxb.sha256 lib/jaxb.sha256
-RUN cd lib \
- && for path in \
-      javax/xml/bind/jaxb-api/2.3.1/jaxb-api-2.3.1.jar \
-      org/glassfish/jaxb/jaxb-runtime/2.3.9/jaxb-runtime-2.3.9.jar \
-      org/glassfish/jaxb/txw2/2.3.9/txw2-2.3.9.jar \
-      com/sun/istack/istack-commons-runtime/3.0.12/istack-commons-runtime-3.0.12.jar \
-      com/sun/activation/javax.activation/1.2.0/javax.activation-1.2.0.jar \
-    ; do curl -fsSLO "${MAVEN_REPO}/${path}"; done \
- && sha256sum -c jaxb.sha256 \
- && rm jaxb.sha256
+# NOTE on JAXB: the JDK dropped javax.xml.bind in Java 11, which broke this app
+# at 1.0.63 (NoClassDefFoundError: javax/xml/bind/JAXBException from Hibernate).
+# As of v1.1.4 the WAR bundles the whole JAXB stack in WEB-INF/lib, so nothing
+# needs adding here. If a future WAR drops those jars again, put jaxb-api,
+# jaxb-runtime, txw2, istack-commons-runtime and javax.activation in
+# $CATALINA_HOME/lib rather than downgrading to Java 8.
 
 # Add the CorsFilter to Tomcat's own conf/web.xml rather than replacing the
 # whole file — see files/config_extra/cors-filter.xml for why.
@@ -87,7 +82,6 @@ ENV PATH="${CATALINA_HOME}/bin:${PATH}" \
     JAVA_OPTS="-Djava.awt.headless=true -XX:MaxRAMPercentage=75.0"
 
 COPY --from=tomcat-dist /usr/local/tomcat ${CATALINA_HOME}
-COPY --from=build /staging/lib/ ${CATALINA_HOME}/lib/
 COPY --from=build /staging/web.xml ${CATALINA_HOME}/conf/web.xml
 COPY --from=build /staging/ccda /etc/ccda
 COPY files/config_extra/referenceccdaservice.xml \
