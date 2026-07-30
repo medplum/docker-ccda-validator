@@ -49,6 +49,19 @@ RUN curl -fsSL -o referenceccdaservice.war \
       "https://github.com/${VALIDATOR_REPO}/releases/download/${VALIDATOR_VERSION}/referenceccdaservice.war" \
  && printf '%s  referenceccdaservice.war\n' "${VALIDATOR_WAR_SHA256}" | sha256sum -c -
 
+# Explode the WAR here rather than letting Tomcat expand it on first boot, so
+# its bundled jars can be patched below and so webapps/ needs no write access
+# at runtime.
+ARG MAVEN_REPO=https://repo1.maven.org/maven2
+COPY files/jar-patches/ jar-patches/
+COPY files/scripts/patch-war-jars.sh ./
+RUN dnf -y install unzip \
+ && dnf clean all \
+ && unzip -q referenceccdaservice.war -d webapp \
+ && rm referenceccdaservice.war \
+ && sh patch-war-jars.sh webapp/WEB-INF/lib jar-patches \
+ && chmod -R a+rX webapp
+
 # Validator config tree, laid out where config_extra/referenceccdaservice.xml
 # points. code_repository and scenarios_directory are read at startup, so they
 # have to exist even while empty.
@@ -94,8 +107,8 @@ COPY --from=build /staging/web.xml ${CATALINA_HOME}/conf/web.xml
 COPY --from=build /staging/ccda /etc/ccda
 COPY files/config_extra/referenceccdaservice.xml \
      ${CATALINA_HOME}/conf/Catalina/localhost/referenceccdaservice.xml
-COPY --from=build /staging/referenceccdaservice.war \
-     ${CATALINA_HOME}/webapps/referenceccdaservice.war
+COPY --from=build /staging/webapp \
+     ${CATALINA_HOME}/webapps/referenceccdaservice
 
 # The stock ROOT/docs/examples/manager/host-manager apps ship unpacked in
 # webapps.dist. None are served here, and manager/host-manager are the usual
