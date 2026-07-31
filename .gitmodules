@@ -6,3 +6,7 @@
 	path = submodules/code-validator-api
 	url = https://github.com/medplum/code-validator-api
 	branch = master
+[submodule "submodules/content-validator-api"]
+	path = submodules/content-validator-api
+	url = https://github.com/medplum/content-validator-api
+	branch = master
