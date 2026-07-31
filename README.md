@@ -55,13 +55,22 @@ docker build --build-arg TOMCAT_VERSION=10.1.57 -t docker-ccda-validator .
 ```
 
 **The WAR must be built first.** `webapps/` is gitignored, so it is empty in a
-fresh clone and the build will fail on the `COPY` until it is populated:
+fresh clone and the build will fail on the `COPY` until it is populated. Build it
+from the submodules, which track the `medplum/` forks and are pinned to the exact
+source the image ships. `code-validator-api` has to be installed first — the
+validator resolves it from the local Maven repo as
+`org.sitenv.vocabulary:codevalidator-api:latestVersion`, and it is not published
+anywhere:
 
 ```
+cd submodules/code-validator-api
+mvn -DskipTests install
 cd ../reference-ccda-validator
 mvn -DskipTests package
-cp target/referenceccdaservice.war ../docker-ccda-validator/webapps/
+cp target/referenceccdaservice.war ../../webapps/
 ```
+
+Both builds need Java 17; each submodule carries a `.java-version` pinning it.
 
 Two version choices are deliberate, and both are now requirements rather than
 preferences:
@@ -114,17 +123,44 @@ themselves are misconfigured.
 
 ## Pushing to ECR
 
+### The image version lives in `VERSION`
+
+`VERSION` at the repo root is the image version, and the only place it is
+written down. Tags are `v<VERSION>-<short-sha>`:
+
+```
+docker build --platform linux/amd64 --provenance=false \
+  -t 647991932601.dkr.ecr.us-east-1.amazonaws.com/medplum/ccda-validator:v$(cat VERSION)-$(git rev-parse --short HEAD) .
+```
+
+Bump `VERSION` in the same commit as the change it ships, so the tag is
+derivable from the tree rather than remembered. Before this file existed the
+version lived only as an ECR tag, which made `aws ecr describe-images` the sole
+record of what had shipped.
+
+Two things this does *not* live in, deliberately:
+
+- **The submodule forks.** The image version is a property of what this repo
+  builds, not of its inputs. Bumping `TOMCAT_VERSION` or `BASE_IMAGE` ships a new
+  image version with byte-identical submodule commits, so a copy in the forks
+  would be stale by construction — and `pom.xml` is an upstream-tracked file, so
+  a Medplum-only version there conflicts on every merge from onc-healthit.
+- **A git tag.** This repo has none. `VERSION` plus the commit sha in the image
+  tag covers it; add tags later if you want, but keep `VERSION` authoritative.
+
+Note the forks' own poms still carry upstream's version strings (`1.1.5`,
+`latestVersion`) while shipping materially different code, so a deployed WAR
+reports a version that points at source which cannot build it. Fixing that means
+a `-medplum.N` qualifier on the forks, tracked separately from this file.
+
 Amazon Linux 2023 is a supported OS for both ECR basic scanning and ECR
 enhanced scanning (Amazon Inspector), so findings actually show up. The
 previous `fedora:21` base was supported by neither, which meant ECR reported
 the image as unscannable rather than clean.
 
-Build for the architecture you deploy on — the Dockerfile is arch-agnostic,
-but a local build only produces your host's architecture:
-
-```
-docker build --platform linux/amd64 --provenance=false -t docker-ccda-validator .
-```
+`--platform` above is not optional either: the Dockerfile is arch-agnostic, but a
+local build only produces your host's architecture, so an Apple Silicon machine
+ships arm64 to an amd64 deployment without complaining.
 
 Rebuilding is what clears OS findings: the runtime stage runs
 `dnf upgrade` so each build picks up the latest ALAS advisories.
@@ -173,8 +209,8 @@ at a fixed version in the WAR itself, so the script would fail the build looking
 for filenames that no longer exist. They are kept only for the reasoning
 recorded in their comments and can be deleted.
 
-Of the **112 runtime artifacts** in the WAR, 111 have no known advisories. What
-the migration cleared that a jar swap could not:
+The **111 runtime artifacts** in the WAR have no known advisories. What the
+migration cleared that a jar swap could not:
 
 - **All Spring findings** (15 on `spring-webmvc` alone, plus `spring-core`,
   `spring-web`, `spring-expression`, `spring-context`) — fixed by Spring 6.2.19.
@@ -191,15 +227,25 @@ the migration cleared that a jar swap could not:
   springdoc-openapi 2.8.17. The UI moved to `/swagger-ui/index.html`
   (`/swagger-ui.html` still redirects) and the spec to `/v3/api-docs`.
 
+- **CVE-2025-48924 in `commons-lang` 2.6** (medium) — the jar is gone. There is
+  no fix in the 2.x line; the advisory's remedy is `commons-lang3` 3.18+, a
+  different artifact in a different package, so this was not a version bump. The
+  only consumer of the 2.x package was the prebuilt
+  `org.hl7.security.ds4p.contentprofile` jar, whose
+  `SecurityXSIProvider$TemplateComparator` calls `StringUtils.isEmpty(String)`.
+  That code *is* reachable — `ReferenceCCDAValidator.validateAsDS4P` →
+  `DS4PUtil.validateAsDS4P` registers `SecurityXSIProvider` in MDHT's
+  `XSITypeProviderRegistry` — so the dependency could not simply be dropped, and
+  renaming the package inside the prebuilt jar would not work either because
+  lang3's signature is `isEmpty(CharSequence)`. Instead the validator supplies
+  that one method itself from `src/main/java/org/apache/commons/lang/`,
+  delegating to `commons-lang3` 3.20.0; `WEB-INF/classes` precedes
+  `WEB-INF/lib` on the webapp classpath. Add methods to that shim only if a new
+  2.x reference appears — scan the built WAR's jars for the
+  `org/apache/commons/lang/` package (excluding `lang3`) to check.
+
 The remaining findings, and why they stay:
 
-- **CVE-2025-48924 in `commons-lang` 2.6** (medium). There is no fix in the 2.x
-  line — the advisory's remedy is `commons-lang3` 3.18+, a different artifact.
-  `org.hl7.security.ds4p.contentprofile` requires 2.6 at runtime, referencing
-  `org.apache.commons.lang.StringUtils`. The vulnerable method is
-  `ClassUtils.getShortClassName`, and across all 112 jars the only thing
-  referencing `ClassUtils` is `commons-lang-2.6.jar` itself, so the vulnerable
-  path is not reachable from application code.
 - **CVE-2026-66299 in Tomcat 10.1.57** — **not applicable to this image**, but it
   will show up in ECR as a HIGH (7.5) against `lib/catalina.jar`. It is an
   unbounded-buffer DoS in the **WebSocket chat example**, and Apache's own

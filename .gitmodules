@@ -1,8 +1,8 @@
 [submodule "submodules/reference-ccda-validator"]
 	path = submodules/reference-ccda-validator
-	url = https://github.com/onc-healthit/reference-ccda-validator
+	url = https://github.com/medplum/reference-ccda-validator
 	branch = master
 [submodule "submodules/code-validator-api"]
 	path = submodules/code-validator-api
-	url = https://github.com/onc-healthit/code-validator-api
+	url = https://github.com/medplum/code-validator-api
 	branch = master
