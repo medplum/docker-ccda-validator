@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Base image: Amazon Linux 2023 + Amazon Corretto 8 (JRE).
+# Base image: Amazon Linux 2023 + Amazon Corretto 17 (headless).
 #
 # Why this one:
 #   * ECR can actually scan it. AL2023 is a supported OS for both ECR basic
@@ -9,57 +9,72 @@
 #     fedora:21 base was on neither list, so ECR reported UNSUPPORTED_IMAGE:
 #     zero findings, which is not the same thing as zero vulnerabilities.
 #   * Small footprint: ~135 rpms, and no wget/tar/unzip/perl/git in the runtime
-#     layer. The -jre variant saves 60MB over the JDK and Tomcat only needs a
-#     JRE (Jasper compiles JSPs with the ecj bundled in $CATALINA_HOME/lib).
+#     layer. Corretto 17 publishes no -jre, so -headless is the slim variant:
+#     it drops the AWT/Swing native stack the server never loads.
 #     AWS publishes ALAS security updates for AL2023 into 2028.
 #   * Distroless / Chainguard / Wolfi bases would be leaner still, but ECR
 #     cannot enumerate their packages, which fails the scannability goal.
 # ---------------------------------------------------------------------------
-# Java 8 because that is the only JDK upstream supports for this validator, and
-# a certification-adjacent tool is the wrong place to run unsupported. It costs
-# nothing in maintenance runway: AWS lists Corretto 8's last planned update as
-# October 2030 (EOL December 2030), later than Corretto 11.
+# Java 17 and Tomcat 10.1 are now required, not optional. The WAR is built
+# against jakarta.servlet 6.0 and Spring Framework 6.2, which need a Servlet 6.0
+# container (Tomcat 10.1.x) and a Java 17 baseline. Tomcat 9 cannot load a
+# jakarta.servlet webapp at all, and Spring 6 will not run on Java 8.
 #
-# JAVA_VERSION and BASE_IMAGE move together -- the Corretto tag suffix differs
-# per line (8 publishes -jre, 11/17/21 publish -headless).
-ARG JAVA_VERSION=8
-ARG BASE_IMAGE=amazoncorretto:8-al2023-jre
-ARG TOMCAT_VERSION=9.0.120
+# This is what closes the Spring CVEs: 5.3.39 was the last public OSS 5.3.x
+# release, so every remaining Spring fix lived in 6.x/7.x behind exactly this
+# migration. See the vulnerability posture section of the README.
+ARG BASE_IMAGE=amazoncorretto:17-al2023-headless
+ARG TOMCAT_VERSION=10.1.57
 
 # --- Apache Tomcat, used only as a file source ------------------------------
 # $CATALINA_HOME is pure Java, so it copies cleanly onto any base or arch.
 # This replaces Fedora's `yum install tomcat`, which pinned us to whatever
 # Tomcat the distro happened to carry.
-FROM tomcat:${TOMCAT_VERSION}-jdk${JAVA_VERSION}-corretto AS tomcat-dist
+#
+# The JDK in this tag is irrelevant: nothing from this stage ever runs, only
+# $CATALINA_HOME is copied out of it. The official -corretto variants stop at
+# Tomcat 9, so 10.1 uses the temurin build to keep an exact patch version pinned
+# rather than floating on the 10.1 tag.
+FROM tomcat:${TOMCAT_VERSION}-jdk17-temurin AS tomcat-dist
 
 # --- Build stage ------------------------------------------------------------
 # Everything needing the network or the git submodules happens here, and stays
 # here. The runtime image receives only finished artifacts.
 FROM ${BASE_IMAGE} AS build
 
-# The upstream project moved from siteadmin/ to onc-healthit/ and its release
-# tags picked up a "v" prefix along the way.
-ARG VALIDATOR_REPO=onc-healthit/reference-ccda-validator
-ARG VALIDATOR_VERSION=v1.1.4
-ARG VALIDATOR_WAR_SHA256=c790ebd283181a9e9fa9e67d345690792fb16fa2f55a0efffaf6a4cd371be858
-
+# The WAR is now built from source rather than downloaded from a GitHub release,
+# because the jakarta.servlet/Spring 6 migration is not upstream: no published
+# onc-healthit release runs on Tomcat 10.1. So there is no release tag or
+# sha256 to pin, and VALIDATOR_REPO/VALIDATOR_VERSION/VALIDATOR_WAR_SHA256 are
+# gone with the download.
+#
+# webapps/ is gitignored, so the WAR is NOT in a fresh clone and must be built
+# before `docker build`:
+#
+#   cd ../reference-ccda-validator \
+#     && mvn -DskipTests package \
+#     && cp target/referenceccdaservice.war ../docker-ccda-validator/webapps/
+#
+# That also means the build no longer verifies what it is installing. The
+# provenance check moved from "sha256 of a published release" to "whatever you
+# just compiled", which is stronger in one sense and weaker in another: nothing
+# stops a stale WAR from being reused. Check the timestamp if a rebuild looks
+# suspiciously unchanged.
 WORKDIR /staging
 
-RUN curl -fsSL -o referenceccdaservice.war \
-      "https://github.com/${VALIDATOR_REPO}/releases/download/${VALIDATOR_VERSION}/referenceccdaservice.war" \
- && printf '%s  referenceccdaservice.war\n' "${VALIDATOR_WAR_SHA256}" | sha256sum -c -
+COPY webapps/referenceccdaservice.war ./
 
 # Explode the WAR here rather than letting Tomcat expand it on first boot, so
-# its bundled jars can be patched below and so webapps/ needs no write access
-# at runtime.
-ARG MAVEN_REPO=https://repo1.maven.org/maven2
-COPY files/jar-patches/ jar-patches/
-COPY files/scripts/patch-war-jars.sh ./
+# webapps/ needs no write access at runtime.
+#
+# The patch-war-jars.sh step that used to run here is gone. Every jar it
+# replaced is now fixed at source in the WAR, and the script is written to fail
+# the build when a jar it expects is missing -- which is now all twelve of them.
+# files/jar-patches/ and files/scripts/patch-war-jars.sh are dead code.
 RUN dnf -y install unzip \
  && dnf clean all \
  && unzip -q referenceccdaservice.war -d webapp \
  && rm referenceccdaservice.war \
- && sh patch-war-jars.sh webapp/WEB-INF/lib jar-patches \
  && chmod -R a+rX webapp
 
 # Validator config tree, laid out where config_extra/referenceccdaservice.xml
@@ -68,18 +83,20 @@ RUN dnf -y install unzip \
 #
 # configs_folder/ccdaReferenceValidatorConfig.xml is versioned with the WAR and
 # ships separately from it, so it has to be refreshed from
-# configuration/ccdaReferenceValidatorConfig.xml on every VALIDATOR_VERSION bump.
+# configuration/ccdaReferenceValidatorConfig.xml whenever the WAR is rebuilt
+# from a new upstream merge.
 COPY files/configs_folder/ ccda/files/configs_folder/
 COPY submodules/code-validator-api/codevalidator-api/docs/ValueSetsHandCreatedbySITE/ \
      ccda/files/validator_configuration/vocabulary/valueset_repository/VSAC/
 RUN mkdir -p ccda/files/validator_configuration/vocabulary/code_repository \
              ccda/files/validator_configuration/scenarios_directory
 
-# NOTE if you ever raise JAVA_VERSION: the JDK dropped javax.xml.bind in Java
-# 11, and this app needs it (Hibernate threw NoClassDefFoundError:
-# javax/xml/bind/JAXBException on 1.0.63 under Java 17). v1.1.4 happens to
-# bundle the whole JAXB stack in WEB-INF/lib so it survives, but that is the
-# WAR's choice to reverse, not a guarantee. On Java 8 the JDK provides it.
+# The JDK dropped javax.xml.bind and javax.annotation after Java 8 (JEP 320),
+# which is what made raising the JDK risky before. That is now handled at the
+# source rather than by luck: the WAR declares the Jakarta replacements
+# explicitly -- jakarta.xml.bind-api + jaxb-runtime (JAXB, used by
+# code-validator-api's Jaxb2Marshaller) and jakarta.annotation-api (@Resource)
+# are all in WEB-INF/lib by declaration, not as an incidental transitive.
 
 # Add the CorsFilter to Tomcat's own conf/web.xml rather than replacing the
 # whole file — see files/config_extra/cors-filter.xml for why.
