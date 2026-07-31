@@ -57,20 +57,36 @@ docker build --build-arg TOMCAT_VERSION=10.1.57 -t docker-ccda-validator .
 **The WAR must be built first.** `webapps/` is gitignored, so it is empty in a
 fresh clone and the build will fail on the `COPY` until it is populated. Build it
 from the submodules, which track the `medplum/` forks and are pinned to the exact
-source the image ships. `code-validator-api` has to be installed first — the
-validator resolves it from the local Maven repo as
-`org.sitenv.vocabulary:codevalidator-api:latestVersion`, and it is not published
-anywhere:
+source the image ships. All three are needed, and **order matters** — the WAR
+pulls two of them from the local Maven repo, and neither is published anywhere:
 
 ```
-cd submodules/code-validator-api
-mvn -DskipTests install
-cd ../reference-ccda-validator
-mvn -DskipTests package
+cd submodules/content-validator-api && mvn -DskipTests install
+cd ../code-validator-api          && mvn -DskipTests install
+cd ../reference-ccda-validator    && mvn -DskipTests package
 cp target/referenceccdaservice.war ../../webapps/
 ```
 
-Both builds need Java 17; each submodule carries a `.java-version` pinning it.
+| Submodule | Supplies | Coordinates |
+|---|---|---|
+| `content-validator-api` | Content validation — compares the document against the scenario file named by `referenceFileName` | `org.sitenv:contentvalidator-api:latestVersion` |
+| `code-validator-api` | ONC vocabulary validation, plus the hand-created VSAC valuesets the Dockerfile copies | `org.sitenv.vocabulary:codevalidator-api:latestVersion` |
+| `reference-ccda-validator` | The webapp itself and MDHT conformance | builds `referenceccdaservice.war` |
+
+Skipping either `install` fails the `package` with `Could not resolve
+dependencies`, not with anything naming the submodule, so it is worth getting
+right the first time.
+
+Note `latestVersion` is a literal version string, not a placeholder and not a
+Maven feature — it is what upstream's poms declare. It means every build of these
+artifacts overwrites the same path in `~/.m2`, so a fork-built jar and an
+upstream-built one are indistinguishable there, and Maven never re-resolves or
+warns that the copy is stale. If a WAR behaves like source you are not looking
+at, a stale `~/.m2` is the first thing to suspect: delete
+`~/.m2/repository/org/sitenv/contentvalidator-api` and
+`~/.m2/repository/org/sitenv/vocabulary/codevalidator-api` and rebuild all three.
+
+All three builds need Java 17; each submodule carries a `.java-version` pinning it.
 
 Two version choices are deliberate, and both are now requirements rather than
 preferences:
