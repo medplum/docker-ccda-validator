@@ -69,22 +69,34 @@ cp target/referenceccdaservice.war ../../webapps/
 
 | Submodule | Supplies | Coordinates |
 |---|---|---|
-| `content-validator-api` | Content validation — compares the document against the scenario file named by `referenceFileName` | `org.sitenv:contentvalidator-api:latestVersion` |
-| `code-validator-api` | ONC vocabulary validation, plus the hand-created VSAC valuesets the Dockerfile copies | `org.sitenv.vocabulary:codevalidator-api:latestVersion` |
-| `reference-ccda-validator` | The webapp itself and MDHT conformance | builds `referenceccdaservice.war` |
+| `content-validator-api` | Content validation — compares the document against the scenario file named by `referenceFileName` | `org.sitenv:contentvalidator-api:latestVersion-medplum.1` |
+| `code-validator-api` | ONC vocabulary validation, plus the hand-created VSAC valuesets the Dockerfile copies | `org.sitenv.vocabulary:codevalidator-api:latestVersion-medplum.1` |
+| `reference-ccda-validator` | The webapp itself and MDHT conformance | builds `referenceccdaservice.war`, version `1.1.5-medplum.1` |
 
 Skipping either `install` fails the `package` with `Could not resolve
 dependencies`, not with anything naming the submodule, so it is worth getting
 right the first time.
 
-Note `latestVersion` is a literal version string, not a placeholder and not a
-Maven feature — it is what upstream's poms declare. It means every build of these
-artifacts overwrites the same path in `~/.m2`, so a fork-built jar and an
-upstream-built one are indistinguishable there, and Maven never re-resolves or
-warns that the copy is stale. If a WAR behaves like source you are not looking
-at, a stale `~/.m2` is the first thing to suspect: delete
-`~/.m2/repository/org/sitenv/contentvalidator-api` and
-`~/.m2/repository/org/sitenv/vocabulary/codevalidator-api` and rebuild all three.
+### Why the versions carry a `-medplum.N` suffix
+
+`latestVersion` is a literal version string in upstream's poms — not a
+placeholder, not a Maven feature. Because neither artifact is published anywhere,
+those coordinates resolve whatever happens to be in `~/.m2`: an upstream-built jar
+just as happily as a fork-built one, silently, since a fixed version string is
+never re-resolved or flagged as stale. A WAR could be built from source you were
+not looking at, which is how the submodules came to be pinned to upstream commits
+that did not match what shipped.
+
+The forks now qualify themselves as `latestVersion-medplum.1`, and the validator's
+own version is `1.1.5-medplum.1` rather than upstream's bare `1.1.5`, so a
+deployed WAR no longer reports a version that points at source which cannot build
+it. Keep the three in lockstep: bump the suffix in a fork and
+`code.validator.version` / `content.validator.version` in the validator's pom must
+follow, or `package` fails to resolve.
+
+`finalName` is unchanged in all three, so `referenceccdaservice.war`,
+`codevalidator.jar` and `contentvalidator.jar` keep their names in `target/`; only
+the installed artifact names, and so the two jars in `WEB-INF/lib`, moved.
 
 All three builds need Java 17; each submodule carries a `.java-version` pinning it.
 
@@ -164,10 +176,9 @@ Two things this does *not* live in, deliberately:
 - **A git tag.** This repo has none. `VERSION` plus the commit sha in the image
   tag covers it; add tags later if you want, but keep `VERSION` authoritative.
 
-Note the forks' own poms still carry upstream's version strings (`1.1.5`,
-`latestVersion`) while shipping materially different code, so a deployed WAR
-reports a version that points at source which cannot build it. Fixing that means
-a `-medplum.N` qualifier on the forks, tracked separately from this file.
+The forks carry their own `-medplum.N` qualifiers, tracked separately from this
+file — see [Why the versions carry a `-medplum.N` suffix](#why-the-versions-carry-a--medplumn-suffix).
+Those say which source a jar came from; `VERSION` says which image shipped.
 
 Amazon Linux 2023 is a supported OS for both ECR basic scanning and ECR
 enhanced scanning (Amazon Inspector), so findings actually show up. The
