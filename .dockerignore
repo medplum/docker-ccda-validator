@@ -1,11 +1,14 @@
-# Keep the build context small: only files/ and the code-validator-api
-# spreadsheets are actually COPYed.
+# Keep the build context small: only files/, the locally built WAR, and the
+# code-validator-api spreadsheets are actually COPYed.
 **/.git
 .gitmodules
 *.md
 conf/
 log/
-webapps/
+# webapps/ stays excluded except for the one artifact the build installs. It is
+# gitignored, so it holds whatever was last built there.
+webapps/*
+!webapps/referenceccdaservice.war
 submodules/reference-ccda-validator/
 submodules/code-validator-api/src/
 submodules/code-validator-api/codevalidator-api/src/

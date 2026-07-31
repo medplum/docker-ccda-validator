@@ -5,19 +5,31 @@
     filter. That copy was a Tomcat 8-era default, so installing it on Tomcat 9
     silently dropped httpHeaderSecurityFilter and froze the mime-type table.
 
-    NOTE: CorsFilter defaults to cors.allowed.origins=*, so any site can POST
-    a C-CDA here and read the result. Uncomment and narrow the init-param
-    below if this validator is reachable from outside a trusted network.
+    cors.allowed.origins is set explicitly rather than left to the default,
+    because the default is not stable across Tomcat versions: Tomcat 9 defaulted
+    it to *, and Tomcat 10.1 defaults it to the empty string, which rejects any
+    request carrying a non-allowed Origin header with 403. Relying on either
+    default silently changes who can call this service on a container upgrade.
+
+    * preserves the behaviour this image has always had. WARNING: it means any
+    website can POST a C-CDA here and read the validation result back. That is
+    acceptable only because the service holds no data and requires no
+    credentials; the documents are supplied by the caller. Do not pair * with
+    cors.support.credentials=true; the CORS spec forbids the combination and
+    Tomcat will reject it.
+
+    Narrow this to an explicit origin list if the validator ever becomes
+    reachable from outside a trusted network, or gains any authenticated or
+    stateful endpoint. Same-origin traffic never reaches the check, so the
+    bundled UI at /static/validationui.html works regardless of this value.
   -->
   <filter>
     <filter-name>CorsFilter</filter-name>
     <filter-class>org.apache.catalina.filters.CorsFilter</filter-class>
-    <!--
     <init-param>
       <param-name>cors.allowed.origins</param-name>
-      <param-value>https://example.internal</param-value>
+      <param-value>*</param-value>
     </init-param>
-    -->
   </filter>
   <filter-mapping>
     <filter-name>CorsFilter</filter-name>

@@ -42,39 +42,64 @@ simply ignored, so requests silently lose that behavior.
 
 | | |
 |---|---|
-| Base | `amazoncorretto:8-al2023-jre` (Amazon Linux 2023 + Corretto 8) |
-| Servlet container | Apache Tomcat 9.0.120, copied from the official `tomcat` image |
+| Base | `amazoncorretto:17-al2023-headless` (Amazon Linux 2023 + Corretto 17) |
+| Servlet container | Apache Tomcat 10.1.57, copied from the official `tomcat` image |
 | Runs as | uid/gid `10001`, non-root |
-| Validator | `referenceccdaservice.war` v1.1.4, downloaded and sha256-verified at build time |
+| Validator | `referenceccdaservice.war`, built from source and copied from `webapps/` |
 
-Versions are build args, so they can be overridden without editing the
-Dockerfile:
+`TOMCAT_VERSION` and `BASE_IMAGE` are build args, so they can be overridden
+without editing the Dockerfile:
 
 ```
-docker build --build-arg VALIDATOR_VERSION=v1.1.4 \
-             --build-arg VALIDATOR_WAR_SHA256=<sha256 of that war> \
-             --build-arg TOMCAT_VERSION=9.0.120 \
-             -t docker-ccda-validator .
+docker build --build-arg TOMCAT_VERSION=10.1.57 -t docker-ccda-validator .
 ```
 
-Two version choices are deliberate:
+**The WAR must be built first.** `webapps/` is gitignored, so it is empty in a
+fresh clone and the build will fail on the `COPY` until it is populated:
 
-- **Tomcat 9** — the WAR is built against `javax.servlet`, so Tomcat 10+ (which
-  moved to `jakarta.servlet`) will not run it.
-- **Java 8** — the only JDK upstream supports for this validator. It is not a
-  dead end: AWS lists Corretto 8's last planned update as October 2030, later
-  than Corretto 11. Newer JDKs do run (Corretto 17 was tested and produced an
-  identical finding set), but they are unsupported by upstream, and Java 11+
-  removes `javax.xml.bind`, which this app needs.
+```
+cd ../reference-ccda-validator
+mvn -DskipTests package
+cp target/referenceccdaservice.war ../docker-ccda-validator/webapps/
+```
+
+Two version choices are deliberate, and both are now requirements rather than
+preferences:
+
+- **Tomcat 10.1** — the WAR is built against `jakarta.servlet` 6.0, so it needs a
+  Servlet 6.0 container. Tomcat 9 cannot load it at all.
+- **Java 17** — Spring Framework 6.2's baseline. This is what closes the Spring
+  CVEs: 5.3.39 was the last public OSS 5.3.x release, so every remaining Spring
+  fix lived in 6.x/7.x behind the `jakarta.servlet` migration. `javax.xml.bind`
+  and `javax.annotation`, which the JDK dropped after 8, are now declared
+  explicitly by the WAR as their Jakarta equivalents.
+
+### CORS is now set explicitly
+
+`cors.allowed.origins` is pinned to `*` in
+`files/config_extra/cors-filter.xml` rather than left to the default, because the
+default is not stable across Tomcat versions — Tomcat 9 defaulted to `*`, and
+Tomcat 10.1 defaults to the empty string and rejects non-allowed origins with
+**403**. Pinning it keeps this image's long-standing behaviour instead of letting
+a container upgrade silently change who can call the service.
+
+`*` means any website can POST a C-CDA here and read the result back. That is
+tolerable only because the service is unauthenticated and stateless — callers
+supply their own documents. Narrow it to an origin list if the validator becomes
+reachable from outside a trusted network or gains any authenticated endpoint.
 
 ### Upgrading the validator
 
-Upstream moved to
-[onc-healthit/reference-ccda-validator](https://github.com/onc-healthit/reference-ccda-validator)
-and its tags now carry a `v` prefix. Three things move together on a version
-bump:
+The WAR is no longer a published release download. The `jakarta.servlet`/Spring 6
+migration is not upstream, so it is built from the
+[medplum/reference-ccda-validator](https://github.com/medplum/reference-ccda-validator)
+fork, which also needs its two API dependencies built and installed first
+(`content-validator-api`, then `code-validator-api`, then the validator itself —
+each with `mvn -DskipTests install`).
 
-1. `VALIDATOR_VERSION` and `VALIDATOR_WAR_SHA256` in the Dockerfile.
+Three things move together when merging new upstream work into that fork:
+
+1. Rebuild the WAR and re-copy it into `webapps/`.
 2. `files/configs_folder/ccdaReferenceValidatorConfig.xml` — this ships
    *separately* from the WAR and is versioned with it, so a stale copy silently
    validates against the wrong expressions. Refresh it from
@@ -106,36 +131,42 @@ Rebuilding is what clears OS findings: the runtime stage runs
 
 ### Vulnerability posture
 
-The OS layer scans clean. Everything that remains is in the vendor WAR's
-bundled jars.
+The OS layer scans clean, and the WAR's jars are now fixed at source rather than
+patched after the fact.
 
-Eleven of those jars are replaced at build time with the lowest fixed versions
-that keep Java 8 bytecode compatibility — see
-`files/jar-patches/replacements.tsv` for the table and
-`files/scripts/patch-war-jars.sh` for what is deliberately left alone. That
-clears 16 CVEs:
+**The build-time jar patching is gone.** `files/jar-patches/` and
+`files/scripts/patch-war-jars.sh` are dead code — every jar they replaced is now
+at a fixed version in the WAR itself, so the script would fail the build looking
+for filenames that no longer exist. They are kept only for the reasoning
+recorded in their comments and can be deleted.
 
-| | critical | high | medium | low |
-|---|---|---|---|---|
-| Vendor WAR as shipped | 5 | 18 | 26 | 10 |
-| After jar patches | 2 | 7 | 25 | 10 |
+Of the **112 runtime artifacts** in the WAR, 111 have no known advisories. What
+the migration cleared that a jar swap could not:
 
-**0 critical / 0 high is not reachable from this repo.** What is left:
+- **All Spring findings** (15 on `spring-webmvc` alone, plus `spring-core`,
+  `spring-web`, `spring-expression`, `spring-context`) — fixed by Spring 6.2.19.
+  This was the whole reason for the Java 17/Tomcat 10.1 move. Note CVE-2026-41849
+  has no fixed release on any branch but does not affect 6.2.19.
+- **CVE-2022-23640 in `xlsx-streamer`** — previously unfixable because 2.2.0
+  needs POI 4.1.2 against a shipped POI 3.17. Resolved by moving to the
+  maintained fork `com.github.pjfanning:excel-streaming-reader` 5.2.0, which
+  targets POI 5.5.1 exactly, alongside POI 3.17 → 5.5.1 and xmlbeans 2.6 → 5.3.0.
+- **Two HIGHs in `commons-fileupload`** — the dependency is gone entirely, since
+  Spring 6 removed `CommonsMultipartResolver` in favour of the container's own
+  multipart parsing.
+- **CRITICAL CVE-2019-17495** (Swagger UI XSS) — springfox 2.5.0 replaced with
+  springdoc-openapi 2.8.17. The UI moved to `/swagger-ui/index.html`
+  (`/swagger-ui.html` still redirects) and the spec to `/v3/api-docs`.
 
-- **7 Spring findings** (`spring-webmvc`, `spring-expression`, `spring-core`,
-  `spring-web`) are fixed only in Spring 6.x/7.x, which require
-  `jakarta.servlet` and Java 17 — a WAR recompiled by upstream plus Tomcat 10+.
-  5.3.39 is the last public OSS 5.3.x release, so there is no patch-level escape.
-  One of them, CVE-2026-41849, has no fixed release at all. The critical among
-  them, CVE-2016-1000027, needs Spring's `HttpInvokerServiceExporter`; this app
-  does not use HTTP invoker remoting, so it is not reachable here.
-- **CVE-2022-23640 in `xlsx-streamer` 1.0.1.** The fix (2.2.0) is built against
-  POI 4.1.2 while the WAR ships POI 3.17, so it fails at startup — this was
-  tried and reverted, see the note in `patch-war-jars.sh`. Clearing it means
-  bumping POI too, which cascades into `poi-ooxml-schemas`, `commons-compress`
-  and `curvesapi` beneath a precompiled `code-validator-api`.
+The one remaining finding, and why it stays:
 
-So a green Inspector dashboard means these plus documented suppression rules,
-not zero findings. Re-run `files/scripts/patch-war-jars.sh`'s table against a
-fresh scan whenever `VALIDATOR_VERSION` moves — the build fails loudly if a
-listed jar is no longer in the WAR rather than silently shipping it unpatched.
+- **CVE-2025-48924 in `commons-lang` 2.6** (medium). There is no fix in the 2.x
+  line — the advisory's remedy is `commons-lang3` 3.18+, a different artifact.
+  `org.hl7.security.ds4p.contentprofile` requires 2.6 at runtime, referencing
+  `org.apache.commons.lang.StringUtils`. The vulnerable method is
+  `ClassUtils.getShortClassName`, and across all 112 jars the only thing
+  referencing `ClassUtils` is `commons-lang-2.6.jar` itself, so the vulnerable
+  path is not reachable from application code.
+
+Rebuilding is still what clears OS findings. Re-scan the WAR's jars whenever the
+fork merges new upstream work.
