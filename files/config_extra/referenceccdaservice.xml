@@ -5,4 +5,10 @@
   <Parameter name="referenceccda.isDynamicVocab" value="false" override="true"/>
   <Parameter name="referenceccda.configFolder" value="/etc/ccda/files/configs_folder" override="true"/>
   <Parameter name="content.scenariosDir" value="/etc/ccda/files/validator_configuration/scenarios_directory" override="true"/>
+
+  <!-- The validator gained optional Keycloak token auth upstream. This
+       container serves it unauthenticated, as it always has, so the API is
+       open to anything that can reach port 8080. Put it behind your own
+       ingress auth, or point these at a realm. -->
+  <Parameter name="keycloak.enabled" value="false" override="true"/>
 </Context>

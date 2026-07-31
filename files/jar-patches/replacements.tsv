@@ -1,0 +1,47 @@
+# Vulnerable jars bundled in the vendor WAR, and the Maven artifact that
+# replaces each one. Applied by files/scripts/patch-war-jars.sh at build time.
+#
+# Column 1 is the exact jar the WAR ships. If a VALIDATOR_VERSION bump changes
+# any of these filenames the build FAILS rather than silently leaving the old
+# jar in place -- re-scan and rebuild this table when that happens.
+#
+# Column 2 is the path under repo1.maven.org/maven2. Replacement jars are
+# checked against patches.sha256 and must be Java 8 bytecode (class file
+# version <= 52; a stray module-info.class at 53 is fine, Java 8 ignores it).
+#
+# <jar in WAR>                     <maven path>
+
+# CVE-2023-6378
+logback-classic-1.2.11.jar         ch/qos/logback/logback-classic/1.2.13/logback-classic-1.2.13.jar
+logback-core-1.2.11.jar            ch/qos/logback/logback-core/1.2.13/logback-core-1.2.13.jar
+
+# CVE-2023-5072
+json-20230227.jar                  org/json/json/20231013/json-20231013.jar
+
+# CVE-2024-47554
+commons-io-2.7.jar                 commons-io/commons-io/2.20.0/commons-io-2.20.0.jar
+
+# CVE-2020-36518, CVE-2022-42003, CVE-2022-42004 (databind),
+# CVE-2025-52999, GHSA-r7wm-3cxj-wff9 (core). 2.18.8 rather than 2.19/2.20
+# because the GHSA is fixed on the 2.18, 2.21 and 2.22 branches only.
+# jackson-annotations moves in lockstep: a split Jackson version is its own bug.
+jackson-databind-2.9.10.8.jar      com/fasterxml/jackson/core/jackson-databind/2.18.8/jackson-databind-2.18.8.jar
+jackson-core-2.9.8.jar             com/fasterxml/jackson/core/jackson-core/2.18.8/jackson-core-2.18.8.jar
+jackson-annotations-2.9.8.jar      com/fasterxml/jackson/core/jackson-annotations/2.18.8/jackson-annotations-2.18.8.jar
+
+# CVE-2023-24998, CVE-2025-48976
+commons-fileupload-1.3.3.jar       commons-fileupload/commons-fileupload/1.6.0/commons-fileupload-1.6.0.jar
+
+# CVE-2022-41853. The -jdk8 classifier is required: mainline hsqldb 2.7.x is
+# compiled for Java 11.
+hsqldb-2.5.2.jar                   org/hsqldb/hsqldb/2.7.4/hsqldb-2.7.4-jdk8.jar
+
+# CVE-2019-17495. springfox-swagger-ui is a webjar -- static assets, zero
+# classes -- so the version does not have to match springfox-swagger2 2.5.0 the
+# way a code dependency would. The UI still reads /v2/api-docs.
+springfox-swagger-ui-2.5.0.jar     io/springfox/springfox-swagger-ui/2.10.5/springfox-swagger-ui-2.10.5.jar
+
+# CVE-2021-23926. POI 3.17 officially pairs with xmlbeans 2.6.0, so this one is
+# a real compatibility bet -- it is validated by the xlsx valueset parsing that
+# vocabulary validation depends on, not by startup alone.
+xmlbeans-2.6.0.jar                 org/apache/xmlbeans/xmlbeans/3.1.0/xmlbeans-3.1.0.jar
