@@ -123,11 +123,44 @@ Build for the architecture you deploy on — the Dockerfile is arch-agnostic,
 but a local build only produces your host's architecture:
 
 ```
-docker build --platform linux/amd64 -t docker-ccda-validator .
+docker build --platform linux/amd64 --provenance=false -t docker-ccda-validator .
 ```
 
 Rebuilding is what clears OS findings: the runtime stage runs
 `dnf upgrade` so each build picks up the latest ALAS advisories.
+
+### `--provenance=false` is required, not cosmetic
+
+Without it, buildx attaches a provenance attestation, which turns the push into
+an OCI **image index** holding two manifests: the real one, plus an attestation
+manifest whose platform is `unknown/unknown`. Amazon Inspector cannot read that
+shape and reports the image as **`UNSUPPORTED_IMAGE`** — the same zero-findings
+non-answer the `fedora:21` base used to produce, for an entirely unrelated
+reason. Picking a scannable base image gets you nothing if the manifest wrapping
+it is unscannable.
+
+Confirm the manifest is a plain single manifest after pushing, because a
+successful push tells you nothing about this:
+
+```
+aws ecr describe-images --repository-name medplum/ccda-validator \
+  --image-ids imageTag=<tag> --query 'imageDetails[0].imageManifestMediaType'
+```
+
+Want `application/vnd.docker.distribution.manifest.v2+json`. If it says
+`application/vnd.oci.image.index.v1+json`, the attestation is there and the
+image will not be scanned. `docker build` and `docker buildx build --push` both
+need the flag; `--sbom=false` belongs with it if SBOM generation is ever turned
+on. Then check that scanning actually ran:
+
+```
+aws ecr describe-image-scan-findings --repository-name medplum/ccda-validator \
+  --image-id imageTag=<tag> --query 'imageScanStatus.status'
+```
+
+`ACTIVE` means scanned. A `ScanNotFoundException` right after a push usually
+just means Inspector has not caught up yet — retry for a few minutes before
+concluding anything.
 
 ### Vulnerability posture
 
@@ -158,7 +191,7 @@ the migration cleared that a jar swap could not:
   springdoc-openapi 2.8.17. The UI moved to `/swagger-ui/index.html`
   (`/swagger-ui.html` still redirects) and the spec to `/v3/api-docs`.
 
-The one remaining finding, and why it stays:
+The remaining findings, and why they stay:
 
 - **CVE-2025-48924 in `commons-lang` 2.6** (medium). There is no fix in the 2.x
   line — the advisory's remedy is `commons-lang3` 3.18+, a different artifact.
@@ -167,6 +200,26 @@ The one remaining finding, and why it stays:
   `ClassUtils.getShortClassName`, and across all 112 jars the only thing
   referencing `ClassUtils` is `commons-lang-2.6.jar` itself, so the vulnerable
   path is not reachable from application code.
+- **CVE-2026-66299 in Tomcat 10.1.57** — **not applicable to this image**, but it
+  will show up in ECR as a HIGH (7.5) against `lib/catalina.jar`. It is an
+  unbounded-buffer DoS in the **WebSocket chat example**, and Apache's own
+  advisory rates it **Low** and states that users who removed the examples web
+  application are not affected. The runtime stage deletes `webapps.dist`, so
+  `examples` is not in the image at all — `webapps/` holds only
+  `referenceccdaservice`. Inspector is version-matching `catalina.jar` and does
+  not model reachability, hence the severity gap.
+
+  Do not chase this one with a version bump. The fix is 10.1.58, which Apache
+  lists as *not yet released*; Inspector's "fixed in 11.0.25" is just the
+  parallel fix on the 11.x branch and is **not** a reason to migrate to Tomcat
+  11. Bump `TOMCAT_VERSION` to 10.1.58 when it ships, to clear the report rather
+  than the risk.
+
+Before acting on any Tomcat finding here, read the Apache advisory
+(<https://tomcat.apache.org/security-10.html>) rather than Inspector's severity
+and `fixedInVersion`. Check the "Affects" range and any mitigation note — several
+Tomcat CVEs only reach the examples, manager, or host-manager apps, none of which
+this image ships.
 
 Rebuilding is still what clears OS findings. Re-scan the WAR's jars whenever the
 fork merges new upstream work.
