@@ -10,10 +10,16 @@
 #     Spring 6.x or 7.x, which require jakarta.servlet and Java 17. That means a
 #     WAR recompiled by upstream plus Tomcat 10+, not a jar swap. One of them
 #     (CVE-2026-41849, spring-expression) has no fixed release at all.
-#   * xmlbeans, xlsx-streamer -- code-validator-api is precompiled against
-#     xlsx-streamer 1.0.1, so a major bump risks NoSuchMethodError while parsing
-#     the VSAC valueset spreadsheets, which is the vocabulary validation path.
-#   * springfox-swagger-ui -- has to stay in step with springfox-swagger2 2.5.0.
+#   * xlsx-streamer -- tried and reverted. 2.2.0 is built against POI 4.1.2 while
+#     the WAR ships POI 3.17, so vocabulary loading dies at startup with
+#     NoClassDefFoundError: org/apache/poi/ooxml/util/DocumentHelper. Fixing
+#     CVE-2022-23640 would mean bumping POI 3.17 -> 4.1.2 as well, which
+#     cascades into poi-ooxml-schemas, commons-compress and curvesapi under a
+#     precompiled code-validator-api. Out of scope for a jar swap.
+#
+# xmlbeans 3.1.0 and springfox-swagger-ui 2.10.5 ARE patched despite POI 3.17
+# officially pairing with xmlbeans 2.6.0 -- verified by parsing the real VSAC
+# spreadsheets (7982 valueset rows) rather than by a clean startup alone.
 #
 # Usage: patch-war-jars.sh <exploded WEB-INF/lib> <jar-patches dir>
 # Requires MAVEN_REPO in the environment.

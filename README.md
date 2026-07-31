@@ -109,32 +109,31 @@ Rebuilding is what clears OS findings: the runtime stage runs
 The OS layer scans clean. Everything that remains is in the vendor WAR's
 bundled jars.
 
-Nine of those jars are replaced at build time with the lowest fixed versions
+Eleven of those jars are replaced at build time with the lowest fixed versions
 that keep Java 8 bytecode compatibility — see
 `files/jar-patches/replacements.tsv` for the table and
 `files/scripts/patch-war-jars.sh` for what is deliberately left alone. That
-clears 14 CVEs:
+clears 16 CVEs:
 
 | | critical | high | medium | low |
 |---|---|---|---|---|
 | Vendor WAR as shipped | 5 | 18 | 26 | 10 |
-| After jar patches | 4 | 7 | 25 | 10 |
+| After jar patches | 2 | 7 | 25 | 10 |
 
 **0 critical / 0 high is not reachable from this repo.** What is left:
 
-- **4 Spring findings** (`spring-webmvc`, `spring-expression`, `spring-core`,
+- **7 Spring findings** (`spring-webmvc`, `spring-expression`, `spring-core`,
   `spring-web`) are fixed only in Spring 6.x/7.x, which require
   `jakarta.servlet` and Java 17 — a WAR recompiled by upstream plus Tomcat 10+.
   5.3.39 is the last public OSS 5.3.x release, so there is no patch-level escape.
-  One of them, CVE-2026-41849, has no fixed release at all.
-  The remaining critical, CVE-2016-1000027, needs Spring's
-  `HttpInvokerServiceExporter`; this app does not use HTTP invoker remoting, so
-  it is not reachable here.
-- **3 criticals in `xlsx-streamer`, `xmlbeans` and `springfox-swagger-ui`** have
-  fixes, but only across major versions. `code-validator-api` is precompiled
-  against `xlsx-streamer` 1.0.1 and reads the VSAC valueset spreadsheets through
-  it, and the springfox UI has to match `springfox-swagger2` 2.5.0. Bumping them
-  is possible but risks breaking vocabulary validation or the swagger endpoint.
+  One of them, CVE-2026-41849, has no fixed release at all. The critical among
+  them, CVE-2016-1000027, needs Spring's `HttpInvokerServiceExporter`; this app
+  does not use HTTP invoker remoting, so it is not reachable here.
+- **CVE-2022-23640 in `xlsx-streamer` 1.0.1.** The fix (2.2.0) is built against
+  POI 4.1.2 while the WAR ships POI 3.17, so it fails at startup — this was
+  tried and reverted, see the note in `patch-war-jars.sh`. Clearing it means
+  bumping POI too, which cascades into `poi-ooxml-schemas`, `commons-compress`
+  and `curvesapi` beneath a precompiled `code-validator-api`.
 
 So a green Inspector dashboard means these plus documented suppression rules,
 not zero findings. Re-run `files/scripts/patch-war-jars.sh`'s table against a
