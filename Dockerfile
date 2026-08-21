@@ -15,16 +15,21 @@
 #   * Distroless / Chainguard / Wolfi bases would be leaner still, but ECR
 #     cannot enumerate their packages, which fails the scannability goal.
 # ---------------------------------------------------------------------------
-# Java 17 and Tomcat 10.1 are now required, not optional. The WAR is built
-# against jakarta.servlet 6.0 and Spring Framework 6.2, which need a Servlet 6.0
-# container (Tomcat 10.1.x) and a Java 17 baseline. Tomcat 9 cannot load a
+# Java 17 and a Jakarta-era Tomcat are now required, not optional. The WAR is
+# built against jakarta.servlet 6.0 and Spring Framework 6.2, which need a
+# Servlet 6.0-or-later container and a Java 17 baseline. Tomcat 9 cannot load a
 # jakarta.servlet webapp at all, and Spring 6 will not run on Java 8.
 #
 # This is what closes the Spring CVEs: 5.3.39 was the last public OSS 5.3.x
 # release, so every remaining Spring fix lived in 6.x/7.x behind exactly this
 # migration. See the vulnerability posture section of the README.
+#
+# Tomcat 11.0.x serves Servlet 6.1, a backward-compatible superset of the 6.0
+# the WAR targets, and holds the same Java 17 floor as 10.1 -- Java 21 only
+# becomes mandatory at Tomcat 12. So the base image below is unchanged by the
+# 10.1 -> 11.0 move; it is a container swap, not a JDK migration.
 ARG BASE_IMAGE=amazoncorretto:17-al2023-headless
-ARG TOMCAT_VERSION=10.1.57
+ARG TOMCAT_VERSION=11.0.25
 
 # --- Apache Tomcat, used only as a file source ------------------------------
 # $CATALINA_HOME is pure Java, so it copies cleanly onto any base or arch.
@@ -33,8 +38,8 @@ ARG TOMCAT_VERSION=10.1.57
 #
 # The JDK in this tag is irrelevant: nothing from this stage ever runs, only
 # $CATALINA_HOME is copied out of it. The official -corretto variants stop at
-# Tomcat 9, so 10.1 uses the temurin build to keep an exact patch version pinned
-# rather than floating on the 10.1 tag.
+# Tomcat 9, so this uses the temurin build to keep an exact patch version
+# pinned rather than floating on the 11.0 tag.
 FROM tomcat:${TOMCAT_VERSION}-jdk17-temurin AS tomcat-dist
 
 # --- Build stage ------------------------------------------------------------
@@ -44,7 +49,7 @@ FROM ${BASE_IMAGE} AS build
 
 # The WAR is now built from source rather than downloaded from a GitHub release,
 # because the jakarta.servlet/Spring 6 migration is not upstream: no published
-# onc-healthit release runs on Tomcat 10.1. So there is no release tag or
+# onc-healthit release runs on a Jakarta Tomcat. So there is no release tag or
 # sha256 to pin, and VALIDATOR_REPO/VALIDATOR_VERSION/VALIDATOR_WAR_SHA256 are
 # gone with the download.
 #

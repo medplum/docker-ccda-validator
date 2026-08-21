@@ -43,7 +43,7 @@ simply ignored, so requests silently lose that behavior.
 | | |
 |---|---|
 | Base | `amazoncorretto:17-al2023-headless` (Amazon Linux 2023 + Corretto 17) |
-| Servlet container | Apache Tomcat 10.1.57, copied from the official `tomcat` image |
+| Servlet container | Apache Tomcat 11.0.25, copied from the official `tomcat` image |
 | Runs as | uid/gid `10001`, non-root |
 | Validator | `referenceccdaservice.war`, built from source and copied from `webapps/` |
 
@@ -51,7 +51,7 @@ simply ignored, so requests silently lose that behavior.
 without editing the Dockerfile:
 
 ```
-docker build --build-arg TOMCAT_VERSION=10.1.57 -t docker-ccda-validator .
+docker build --build-arg TOMCAT_VERSION=11.0.25 -t docker-ccda-validator .
 ```
 
 **The WAR must be built first.** `webapps/` is gitignored, so it is empty in a
@@ -103,8 +103,11 @@ All three builds need Java 17; each submodule carries a `.java-version` pinning 
 Two version choices are deliberate, and both are now requirements rather than
 preferences:
 
-- **Tomcat 10.1** — the WAR is built against `jakarta.servlet` 6.0, so it needs a
-  Servlet 6.0 container. Tomcat 9 cannot load it at all.
+- **Tomcat 11.0** — the WAR is built against `jakarta.servlet` 6.0, so it needs a
+  Servlet 6.0-or-later container. Tomcat 9 cannot load it at all. 11.0.x serves
+  Servlet 6.1, a backward-compatible superset, and keeps the same Java 17 floor
+  as 10.1.x — Java 21 only becomes mandatory at Tomcat 12. Tomcat 10.1.x still
+  works if you need to move back; it is a one-line `TOMCAT_VERSION` change.
 - **Java 17** — Spring Framework 6.2's baseline. This is what closes the Spring
   CVEs: 5.3.39 was the last public OSS 5.3.x release, so every remaining Spring
   fix lived in 6.x/7.x behind the `jakarta.servlet` migration. `javax.xml.bind`
@@ -116,9 +119,9 @@ preferences:
 `cors.allowed.origins` is pinned to `*` in
 `files/config_extra/cors-filter.xml` rather than left to the default, because the
 default is not stable across Tomcat versions — Tomcat 9 defaulted to `*`, and
-Tomcat 10.1 defaults to the empty string and rejects non-allowed origins with
-**403**. Pinning it keeps this image's long-standing behaviour instead of letting
-a container upgrade silently change who can call the service.
+Tomcat 10.1 and 11.0 default to the empty string and reject non-allowed origins
+with **403**. Pinning it keeps this image's long-standing behaviour instead of
+letting a container upgrade silently change who can call the service.
 
 `*` means any website can POST a C-CDA here and read the result back. That is
 tolerable only because the service is unauthenticated and stateless — callers
@@ -241,8 +244,8 @@ migration cleared that a jar swap could not:
 
 - **All Spring findings** (15 on `spring-webmvc` alone, plus `spring-core`,
   `spring-web`, `spring-expression`, `spring-context`) — fixed by Spring 6.2.19.
-  This was the whole reason for the Java 17/Tomcat 10.1 move. Note CVE-2026-41849
-  has no fixed release on any branch but does not affect 6.2.19.
+  This was the whole reason for the Java 17/Jakarta Tomcat move. Note
+  CVE-2026-41849 has no fixed release on any branch but does not affect 6.2.19.
 - **CVE-2022-23640 in `xlsx-streamer`** — previously unfixable because 2.2.0
   needs POI 4.1.2 against a shipped POI 3.17. Resolved by moving to the
   maintained fork `com.github.pjfanning:excel-streaming-reader` 5.2.0, which
@@ -273,23 +276,20 @@ migration cleared that a jar swap could not:
 
 The remaining findings, and why they stay:
 
-- **CVE-2026-66299 in Tomcat 10.1.57** — **not applicable to this image**, but it
-  will show up in ECR as a HIGH (7.5) against `lib/catalina.jar`. It is an
-  unbounded-buffer DoS in the **WebSocket chat example**, and Apache's own
-  advisory rates it **Low** and states that users who removed the examples web
-  application are not affected. The runtime stage deletes `webapps.dist`, so
-  `examples` is not in the image at all — `webapps/` holds only
-  `referenceccdaservice`. Inspector is version-matching `catalina.jar` and does
-  not model reachability, hence the severity gap.
+- **CVE-2026-66299** — cleared as of Tomcat 11.0.25, which carries the fix. It
+  had never been applicable to this image: it is an unbounded-buffer DoS in the
+  **WebSocket chat example**, Apache's own advisory rates it **Low**, and users
+  who removed the examples web application are unaffected. The runtime stage
+  deletes `webapps.dist`, so `examples` was never in the image — `webapps/`
+  holds only `referenceccdaservice`. Inspector reported it as a HIGH (7.5)
+  against `lib/catalina.jar` because it version-matches and does not model
+  reachability, hence the severity gap.
 
-  Do not chase this one with a version bump. The fix is 10.1.58, which Apache
-  lists as *not yet released*; Inspector's "fixed in 11.0.25" is just the
-  parallel fix on the 11.x branch and is **not** a reason to migrate to Tomcat
-  11. Bump `TOMCAT_VERSION` to 10.1.58 when it ships, to clear the report rather
-  than the risk.
+  The equivalent 10.1.x fix is 10.1.58 (10.1.59 is the current 10.1 release), so
+  either branch clears the report. Note that neither cleared any real risk here.
 
 Before acting on any Tomcat finding here, read the Apache advisory
-(<https://tomcat.apache.org/security-10.html>) rather than Inspector's severity
+(<https://tomcat.apache.org/security-11.html>) rather than Inspector's severity
 and `fixedInVersion`. Check the "Affects" range and any mitigation note — several
 Tomcat CVEs only reach the examples, manager, or host-manager apps, none of which
 this image ships.
