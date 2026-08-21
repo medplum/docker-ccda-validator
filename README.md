@@ -274,7 +274,26 @@ migration cleared that a jar swap could not:
   2.x reference appears — scan the built WAR's jars for the
   `org/apache/commons/lang/` package (excluding `lang3`) to check.
 
-The remaining findings, and why they stay:
+Inspector reports **no findings** against this image as of v1.3.1. The two that
+were last outstanding, and what they were actually worth:
+
+- **CVE-2026-49844 in `log4j-api` 2.24.3** — cleared by pinning log4j to 2.26.1,
+  and never reachable here. `MapMessage.asJson()` emits bare `NaN`/`Infinity`
+  tokens, so the JSON it produces is invalid; Apache's advisory says that path
+  needs `JsonTemplateLayout`'s message resolver, or another layout that
+  serializes a `MapMessage` as JSON. Those layouts live in `log4j-core`, which
+  is **not in the WAR** — `log4j-api` ships no layout classes at all. Logging is
+  logback with plain pattern encoders, there is no log4j config in the WAR, and
+  no source here constructs a `MapMessage`; `log4j-api` is present only because
+  POI logs through it, with `log4j-to-slf4j` bridging to logback.
+
+  The fix is an imported `log4j-bom` in the validator fork's
+  `dependencyManagement`, not a pinned artifact: 2.24.3 arrived by two
+  independent transitive paths — `codevalidator-api` → `poi` 5.5.1 →
+  `log4j-api`, and `springdoc-openapi-starter-webmvc-ui` → … → `log4j-to-slf4j`
+  → `log4j-api` — so pinning one would have left the other behind. Check both
+  with `mvn dependency:tree -Dincludes='org.apache.logging.log4j:*'` before
+  believing a log4j bump landed.
 
 - **CVE-2026-66299** — cleared as of Tomcat 11.0.25, which carries the fix. It
   had never been applicable to this image: it is an unbounded-buffer DoS in the
@@ -287,6 +306,11 @@ The remaining findings, and why they stay:
 
   The equivalent 10.1.x fix is 10.1.58 (10.1.59 is the current 10.1 release), so
   either branch clears the report. Note that neither cleared any real risk here.
+
+Both were version matches against a jar, on code paths the image never reaches.
+That is the normal shape of a finding here, so establish reachability before
+treating one as urgent — and clear it anyway when the bump is cheap, so a real
+finding is not lost among accepted ones.
 
 Before acting on any Tomcat finding here, read the Apache advisory
 (<https://tomcat.apache.org/security-11.html>) rather than Inspector's severity
