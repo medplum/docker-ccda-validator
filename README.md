@@ -279,8 +279,15 @@ migration cleared that a jar swap could not:
   2.x reference appears — scan the built WAR's jars for the
   `org/apache/commons/lang/` package (excluding `lang3`) to check.
 
-Inspector reports **no findings** against this image as of v1.3.2. The three
-that were last outstanding, and what they were actually worth:
+As of v1.3.2 the **OS layer scans clean** and the WAR's jars have no findings.
+Outstanding as of the 2026-09-24 scan are **12 findings against Tomcat 11.0.25**
+in `lib/catalina.jar` (3 CRITICAL, 7 HIGH, 1 MEDIUM, 1 LOW), all reported fixed
+in **11.0.26**. These are new advisories, not a regression from v1.3.1, and they
+have **not** been assessed for reachability yet — read the Apache advisory
+before acting on them, per the note below. They are unrelated to the curl
+rebuild this version shipped for.
+
+What was last cleared, and what it was actually worth:
 
 - **CVE-2026-10536 in `libcurl-minimal` and CVE-2026-9080 in `curl-minimal`
   8.17.0** — cleared by the v1.3.2 rebuild, which picks up curl
