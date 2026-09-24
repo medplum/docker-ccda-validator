@@ -193,7 +193,12 @@ local build only produces your host's architecture, so an Apple Silicon machine
 ships arm64 to an amd64 deployment without complaining.
 
 Rebuilding is what clears OS findings: the runtime stage runs
-`dnf upgrade` so each build picks up the latest ALAS advisories.
+`dnf upgrade` so each build picks up the latest ALAS advisories. Use
+`--no-cache` when that is the point of the build — the `dnf upgrade` layer
+otherwise caches and the rebuild is a no-op. Note this is a separate thing from
+`--pull`: AWS often publishes an ALAS fix well before the Corretto base image
+rebuilds against it, so a fresh base image is not a substitute (see
+[Vulnerability posture](#vulnerability-posture)).
 
 ### `--provenance=false` is required, not cosmetic
 
@@ -274,8 +279,23 @@ migration cleared that a jar swap could not:
   2.x reference appears — scan the built WAR's jars for the
   `org/apache/commons/lang/` package (excluding `lang3`) to check.
 
-Inspector reports **no findings** against this image as of v1.3.1. The two that
-were last outstanding, and what they were actually worth:
+Inspector reports **no findings** against this image as of v1.3.2. The three
+that were last outstanding, and what they were actually worth:
+
+- **CVE-2026-10536 in `libcurl-minimal` and CVE-2026-9080 in `curl-minimal`
+  8.17.0** — cleared by the v1.3.2 rebuild, which picks up curl
+  8.21.0-5.amzn2023.0.1. Both are covered by **ALAS2023-2026-2132** (published
+  2026-09-14), which bundles 15 curl CVEs in all.
+
+  This one is the worked example for why *rebuilding*, not a base-image bump,
+  is the fix for an OS finding. curl reaches the image only through the base
+  image — nothing in the Dockerfile installs it, and it cannot be dropped
+  because `HEALTHCHECK` uses it. But the base image is not where the fix
+  arrives: `amazoncorretto:17-al2023-headless` built **2026-09-17**, three days
+  *after* the advisory, still shipped 8.17.0. Only the runtime stage's
+  `dnf -y --releasever=latest upgrade` clears it, and that layer caches, so the
+  rebuild has to run with `--no-cache` to bust it. Pulling a newer base image
+  would have changed nothing.
 
 - **CVE-2026-49844 in `log4j-api` 2.24.3** — cleared by pinning log4j to 2.26.1,
   and never reachable here. `MapMessage.asJson()` emits bare `NaN`/`Infinity`
@@ -307,9 +327,9 @@ were last outstanding, and what they were actually worth:
   The equivalent 10.1.x fix is 10.1.58 (10.1.59 is the current 10.1 release), so
   either branch clears the report. Note that neither cleared any real risk here.
 
-Both were version matches against a jar, on code paths the image never reaches.
-That is the normal shape of a finding here, so establish reachability before
-treating one as urgent — and clear it anyway when the bump is cheap, so a real
+The two jar findings were version matches on code paths the image never
+reaches. That is the normal shape of a finding here, so establish reachability
+before treating one as urgent — and clear it anyway when the bump is cheap, so a real
 finding is not lost among accepted ones.
 
 Before acting on any Tomcat finding here, read the Apache advisory
