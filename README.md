@@ -43,7 +43,7 @@ simply ignored, so requests silently lose that behavior.
 | | |
 |---|---|
 | Base | `amazoncorretto:17-al2023-headless` (Amazon Linux 2023 + Corretto 17) |
-| Servlet container | Apache Tomcat 11.0.25, copied from the official `tomcat` image |
+| Servlet container | Apache Tomcat 11.0.26, copied from the official `tomcat` image |
 | Runs as | uid/gid `10001`, non-root |
 | Validator | `referenceccdaservice.war`, built from source and copied from `webapps/` |
 
@@ -51,7 +51,7 @@ simply ignored, so requests silently lose that behavior.
 without editing the Dockerfile:
 
 ```
-docker build --build-arg TOMCAT_VERSION=11.0.25 -t docker-ccda-validator .
+docker build --build-arg TOMCAT_VERSION=11.0.26 -t docker-ccda-validator .
 ```
 
 **The WAR must be built first.** `webapps/` is gitignored, so it is empty in a
@@ -222,7 +222,28 @@ Want `application/vnd.docker.distribution.manifest.v2+json`. If it says
 `application/vnd.oci.image.index.v1+json`, the attestation is there and the
 image will not be scanned. `docker build` and `docker buildx build --push` both
 need the flag; `--sbom=false` belongs with it if SBOM generation is ever turned
-on. Then check that scanning actually ran:
+on.
+
+**On Docker 29.x, `--provenance=false` is no longer sufficient.** It suppresses
+the attestation, so you get a single manifest rather than an index -- but that
+manifest is now written as `application/vnd.oci.image.manifest.v1+json`, a third
+value this check did not previously anticipate. Both v1.3.2 and v1.3.3 pushed
+that way on first attempt, on Docker 29.4.2. Routing through the local daemon
+does not help either: `--output type=docker` followed by `docker push` still
+produced OCI. What works is pushing straight from buildx with the media type
+pinned:
+
+```
+docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+  --output type=image,name=<repo>:<tag>,oci-mediatypes=false,push=true .
+```
+
+Whether Inspector can in fact read the OCI single-manifest form was not tested
+-- the known-good shape was one flag away, so both releases were re-pushed
+rather than used as an experiment. Check the media type after **every** push;
+the only reason this was caught is that the check is in this runbook.
+
+Then check that scanning actually ran:
 
 ```
 aws ecr describe-image-scan-findings --repository-name medplum/ccda-validator \
@@ -279,15 +300,51 @@ migration cleared that a jar swap could not:
   2.x reference appears — scan the built WAR's jars for the
   `org/apache/commons/lang/` package (excluding `lang3`) to check.
 
-As of v1.3.2 the **OS layer scans clean** and the WAR's jars have no findings.
-Outstanding as of the 2026-09-24 scan are **12 findings against Tomcat 11.0.25**
-in `lib/catalina.jar` (3 CRITICAL, 7 HIGH, 1 MEDIUM, 1 LOW), all reported fixed
-in **11.0.26**. These are new advisories, not a regression from v1.3.1, and they
-have **not** been assessed for reachability yet — read the Apache advisory
-before acting on them, per the note below. They are unrelated to the curl
-rebuild this version shipped for.
+Inspector reports **no findings** against this image as of v1.3.3 — confirmed
+by the 2026-09-24 scan of `v1.3.3-ce7bbdb`, not assumed. What was last cleared,
+and what it was actually worth:
 
-What was last cleared, and what it was actually worth:
+- **12 CVEs against Tomcat 11.0.25** (3 CRITICAL, 7 HIGH, 1 MEDIUM, 1 LOW by
+  Inspector's rating) — cleared by `TOMCAT_VERSION` 11.0.25 -> 11.0.26, a
+  one-line patch-level bump within the same branch. **Eleven of the twelve were
+  not reachable in this image's configuration**, which is the clearest example
+  yet of why the Apache advisory has to be read before acting:
+
+  | CVE | Inspector | Apache | Requires | Reachable |
+  | --- | --- | --- | --- | --- |
+  | CVE-2026-76183 | CRIT 9.8 | Important | WebSocket | no |
+  | CVE-2026-86248 | CRIT 9.8 | Moderate | CLIENT_CERT + FFM + OpenSSL | no |
+  | CVE-2026-86350 | CRIT 9.1 | Important | HTTP/2 | no |
+  | CVE-2026-77762 | HIGH 8.1 | **Low** | HTTP/2 | no |
+  | CVE-2026-78383 | HIGH 7.5 | Important | AJP connector | no |
+  | CVE-2026-77791 | HIGH 7.5 | Important | WebSocket | no |
+  | CVE-2026-79677 | HIGH 7.5 | Moderate | WebSocket | no |
+  | CVE-2026-87022 | HIGH 7.5 | **Low** | WebSocket + per-message-deflate | no |
+  | CVE-2026-75973 | HIGH 7.3 | **Low** | Jakarta Auth + multiple webapps | no |
+  | CVE-2026-78437 | HIGH 7.3 | **Low** | HTTP/2 | no |
+  | CVE-2026-73581 | MED 6.5 | Moderate | OpenSSL/FFM TLS + keystore | no |
+  | CVE-2026-77756 | LOW 3.7 | Low | behind a reverse proxy | **likely** |
+
+  The reachability column is not a judgement call; it follows from what the
+  running image actually starts. Only `http-nio-8080` is active -- plain
+  HTTP/1.1, NIO. The 8443 TLS/HTTP/2 connector and the AJP connector are both
+  commented out in the stock `server.xml`, Tomcat Native/OpenSSL is absent
+  ("the Apache Tomcat Native library ... was not found"), no WebSocket
+  container is ever initialized (`WsSci` does not run and nothing declares
+  `@ServerEndpoint`), the WAR ships no `WEB-INF/web.xml` at all -- so no
+  `security-constraint`, `login-config` or `CLIENT-CERT` -- and exactly one
+  webapp is deployed. Confirm all of this with `docker logs` and
+  `conf/server.xml` before trusting it again after an upgrade.
+
+  The one that does apply is **CVE-2026-77756**: Transfer-Encoding honored on
+  HTTP/1.0 requests, which needs a reverse proxy in front. Apache rates it Low
+  and the impact is one user's request failing, not disclosure.
+
+  Note how far apart the two ratings run. Inspector calls CVE-2026-87022 a HIGH
+  where Apache calls it Low, and CVE-2026-86248 a CRITICAL 9.8 where Apache says
+  Moderate. The bump was still worth doing at once: it is one line, and three
+  CRITICALs sitting in the dashboard are three places a real finding can hide.
+
 
 - **CVE-2026-10536 in `libcurl-minimal` and CVE-2026-9080 in `curl-minimal`
   8.17.0** — cleared by the v1.3.2 rebuild, which picks up curl
