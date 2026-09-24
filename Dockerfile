@@ -29,7 +29,7 @@
 # becomes mandatory at Tomcat 12. So the base image below is unchanged by the
 # 10.1 -> 11.0 move; it is a container swap, not a JDK migration.
 ARG BASE_IMAGE=amazoncorretto:17-al2023-headless
-ARG TOMCAT_VERSION=11.0.25
+ARG TOMCAT_VERSION=11.0.26
 
 # --- Apache Tomcat, used only as a file source ------------------------------
 # $CATALINA_HOME is pure Java, so it copies cleanly onto any base or arch.
