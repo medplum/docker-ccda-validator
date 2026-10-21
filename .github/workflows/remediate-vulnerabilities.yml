@@ -1,0 +1,136 @@
+name: Remediate vulnerabilities
+
+# Rebuilds the image with every available fix, pins vulnerable jars to their
+# fixed versions, verifies the result, and opens PRs to ship it. See
+# scripts/remediate-vulnerabilities.sh for the steps.
+#
+# Configuration (all optional; without them the run is report-only):
+#   secrets.AWS_ROLE_TO_ASSUME, secrets.AWS_REGION
+#       Read-only role for the ECR repo and Inspector. Enables comparing against
+#       the deployed image and acting on Inspector's findings -- the list Vanta
+#       measures the SLA against.
+#   secrets.MEDPLUM_BOT_GITHUB_ACCESS_TOKEN, MEDPLUM_BOT_NAME, MEDPLUM_BOT_EMAIL
+#       Contents + pull-requests write on this repo and
+#       medplum/reference-ccda-validator. Enables opening PRs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: Severities to act on
+        type: string
+        default: HIGH,CRITICAL
+      force_release:
+        description: Open a release PR even when only OS packages changed and there is no baseline to prove it
+        type: boolean
+        default: false
+      open_prs:
+        description: Open or update pull requests (off = report only)
+        type: boolean
+        default: true
+  schedule:
+    # Mondays 14:00 UTC. ALAS advisories land daily; weekly keeps well inside
+    # the 30-day SLA while leaving time to review the PR.
+    - cron: '0 14 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remediate-vulnerabilities
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      HAS_AWS: ${{ secrets.AWS_ROLE_TO_ASSUME != '' }}
+      HAS_BOT: ${{ secrets.MEDPLUM_BOT_GITHUB_ACCESS_TOKEN != '' }}
+      SEVERITY: ${{ inputs.severity || 'HIGH,CRITICAL' }}
+      ECR_REPOSITORY: medplum/ccda-validator
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      # Start from the forks' default branches, not the pinned commits, so fixes
+      # already merged there but not yet in an image are picked up and shipped.
+      - name: Track the forks' default branches
+        run: git submodule update --remote --checkout
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: corretto
+          java-version: '17'
+          cache: maven
+
+      - name: Cache the Trivy database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-${{ github.run_id }}
+          restore-keys: trivy-
+
+      - name: Configure AWS credentials
+        if: env.HAS_AWS == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Fetch the deployed image and its Inspector findings
+        id: baseline
+        if: env.HAS_AWS == 'true'
+        continue-on-error: true
+        run: scripts/fetch-baseline.sh "$RUNNER_TEMP/baseline"
+
+      - name: Remediate
+        id: remediate
+        env:
+          FORCE_RELEASE: ${{ inputs.force_release || false }}
+          BASELINE_IMAGE: ${{ steps.baseline.outputs.image }}
+          INSPECTOR: ${{ steps.baseline.outputs.inspector }}
+        run: |
+          args=(--out remediation --severity "$SEVERITY")
+          [[ -n "$BASELINE_IMAGE" ]] && args+=(--baseline-image "$BASELINE_IMAGE")
+          [[ -n "$INSPECTOR" ]] && args+=(--inspector-findings "$INSPECTOR")
+          scripts/remediate-vulnerabilities.sh "${args[@]}"
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [[ -f remediation/report.md ]]; then
+            cat remediation/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$HAS_AWS" != true ]]; then
+            echo "> No AWS role configured, so there is no baseline: OS-only fixes need a manual run with **force_release**." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: remediation-report
+          path: |
+            remediation/*.json
+            remediation/*.md
+            remediation/*.log
+          if-no-files-found: ignore
+
+      - name: Open pull requests
+        if: >-
+          steps.remediate.outputs.release == 'true'
+          && env.HAS_BOT == 'true'
+          && (github.event_name == 'schedule' || inputs.open_prs)
+        env:
+          GH_TOKEN: ${{ secrets.MEDPLUM_BOT_GITHUB_ACCESS_TOKEN }}
+          BOT_EMAIL: ${{ secrets.MEDPLUM_BOT_EMAIL }}
+          BOT_NAME: ${{ secrets.MEDPLUM_BOT_NAME }}
+        run: |
+          git config --global user.email "$BOT_EMAIL"
+          git config --global user.name "$BOT_NAME"
+          scripts/open-remediation-prs.sh remediation
