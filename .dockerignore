@@ -13,3 +13,7 @@ submodules/reference-ccda-validator/
 submodules/code-validator-api/src/
 submodules/code-validator-api/codevalidator-api/src/
 submodules/code-validator-api/codevalidator-api/target/
+# Build-host tooling and its output (remediation/ can hold multi-GB image tars).
+scripts/
+remediation/
+.github/

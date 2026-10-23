@@ -61,11 +61,24 @@ source the image ships. All three are needed, and **order matters** — the WAR
 pulls two of them from the local Maven repo, and neither is published anywhere:
 
 ```
-cd submodules/content-validator-api && mvn -DskipTests install
-cd ../code-validator-api          && mvn -DskipTests install
-cd ../reference-ccda-validator    && mvn -DskipTests package
+scripts/build-war.sh
+```
+
+which runs, in order:
+
+```
+cd submodules/content-validator-api && mvn -DskipTests clean install
+cd ../code-validator-api          && mvn -DskipTests clean install
+cd ../reference-ccda-validator    && mvn -DskipTests clean package
 cp target/referenceccdaservice.war ../../webapps/
 ```
+
+**`clean` is not optional after a dependency change.** maven-war-plugin builds
+the WAR from the exploded `target/referenceccdaservice/` directory and never
+prunes it, so the old jar stays in `WEB-INF/lib` beside the new one: a jackson
+bump without `clean` ships `jackson-databind-2.22.1.jar` *and* `-2.22.3.jar`,
+and the scanner still reports the old one. `scripts/build-war.sh` fails the
+build if any jar appears in two versions.
 
 | Submodule | Supplies | Coordinates |
 |---|---|---|
@@ -151,6 +164,62 @@ Three things move together when merging new upstream work into that fork:
 Re-run a real validation after every bump rather than trusting a successful
 startup — the app deploys and serves its UI fine in states where the validators
 themselves are misconfigured.
+
+## Automated remediation
+
+`.github/workflows/remediate-vulnerabilities.yml` runs every Monday (and on
+demand from the Actions tab). It runs `scripts/remediate-vulnerabilities.sh`,
+which:
+
+1. Builds the WAR from the forks' default branches, scans its jars with Trivy
+   (and, when AWS is configured, takes the deployed image's Amazon Inspector
+   findings too, since those are what Vanta reads), and pins each vulnerable
+   jar to its fixed version in `submodules/reference-ccda-validator/pom.xml`.
+   `scripts/vulnfix.py` decides where each pin goes: it raises the BOM when one
+   manages the artifact (`jackson.version` for jackson-core/-databind), the
+   declared version for a direct dependency, and otherwise adds an explicit
+   `dependencyManagement` entry. Since this pom builds the WAR, that entry
+   covers every transitive path, including the forks'. It
+   picks the lowest version that clears every finding **within the installed
+   major version**. A fix that exists only in a new major (Spring 6 -> 7) is
+   reported for a human instead of applied.
+2. Runs the validator's tests if anything was pinned.
+3. Builds the image with `--pull --no-cache`, so `dnf upgrade` picks up every
+   ALAS fix published so far, and raises `TOMCAT_VERSION` if the Tomcat jars
+   carry a fixed finding.
+4. Boots the container and validates a sample C-CDA through the API.
+5. Writes `remediation/report.md`: baseline vs. after, what changed, and what
+   is left. OS packages with no ALAS fix yet are listed and picked up by a later run.
+
+If anything is worth shipping (new pins, a Tomcat bump, fork commits not yet in an
+image, or findings cleared relative to the deployed image), it opens or
+refreshes two PRs on the `auto/vuln-remediation` branch: one on
+`reference-ccda-validator` with the pins, and one here that moves the submodule,
+bumps `VERSION`, and carries the report. A failed check opens them as drafts.
+Merge the validator PR first, **with a merge commit**, since the submodule here
+points at that branch's commit. Merging this repo's PR changes `VERSION` on
+`main`, which runs `.github/workflows/publish-image.yml` to build, push, and check
+the manifest media type and Inspector scan exactly as described below.
+Deploying the new tag is still manual.
+
+The same script runs locally; it needs Docker, JDK 17 + Maven, python3 and jq,
+and runs Trivy from a digest-pinned container:
+
+```
+scripts/remediate-vulnerabilities.sh --platform linux/arm64   # native on Apple Silicon
+```
+
+Configuration, as repository secrets (both workflows only report when they are absent):
+
+| Secret | Used for |
+|---|---|
+| `AWS_ROLE_TO_ASSUME`, `AWS_REGION` | OIDC role. Remediation needs ECR read + `inspector2:ListFindings`; publishing also needs ECR push. |
+| `MEDPLUM_BOT_GITHUB_ACCESS_TOKEN` | Contents + pull-requests write on this repo and `medplum/reference-ccda-validator`. The default `GITHUB_TOKEN` cannot push to the fork. |
+| `MEDPLUM_BOT_NAME`, `MEDPLUM_BOT_EMAIL` | Commit identity for the bot. |
+
+Without AWS there is no baseline, so a run whose only effect is newer OS packages
+cannot tell that it fixed anything. Run it manually with **force_release** to
+ship it anyway.
 
 ## Pushing to ECR
 

@@ -3,3 +3,5 @@
 *.zip
 *.swp
 *.xlsx
+# Output of scripts/remediate-vulnerabilities.sh
+remediation/
