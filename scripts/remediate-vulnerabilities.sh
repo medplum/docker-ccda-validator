@@ -191,8 +191,11 @@ if [[ "$build_ok" == true && "$SKIP_IMAGE" == false ]]; then
     image_ok=true
     log "Scanning the image"
     scan_image "$IMAGE" image.json
+    tomcat_args=(--trivy "$OUT/image.json")
+    # Inspector's database can lead Trivy's for Tomcat (11.0.27's CVEs did).
+    [[ -n "$INSPECTOR" ]] && tomcat_args+=(--inspector "$INSPECTOR")
     vulnfix pin-tomcat --dockerfile "$ROOT/Dockerfile" --severity "$SEVERITY" \
-      --trivy "$OUT/image.json" --output "$OUT/tomcat.json"
+      "${tomcat_args[@]}" --output "$OUT/tomcat.json"
     if [[ "$(sha "$ROOT/Dockerfile")" != "$dockerfile_before" ]]; then
       log "Rebuilding with the new TOMCAT_VERSION"
       if build_image; then
