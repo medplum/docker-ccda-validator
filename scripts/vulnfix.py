@@ -132,9 +132,13 @@ def load_inspector(path):
     for f in data.get("findings") or []:
         details = f.get("packageVulnerabilityDetails") or {}
         for p in details.get("vulnerablePackages") or []:
+            # Jars come back as JAVA, and Tomcat itself as GENERIC "apache/tomcat"
+            # located by catalina.jar, so the file path is the reliable signal.
+            is_jar = (p.get("packageManager") in ("JAVA", "JAR", "GRADLE", "POM")
+                      or (p.get("filePath") or "").endswith(".jar"))
             yield {
                 "source": "inspector",
-                "class": "lang" if p.get("packageManager") in ("JAR", "GRADLE", "POM") else "os",
+                "class": "lang" if is_jar else "os",
                 "type": (p.get("packageManager") or "").lower(),
                 "pkg": p.get("name", ""),
                 "installed": p.get("version", ""),
@@ -341,6 +345,12 @@ def covering_bom(pom, group, artifact, target):
 # pin-java
 # ---------------------------------------------------------------------------
 
+def already_fixed(where, deployed_only, hint=""):
+    if deployed_only:
+        return f"{where} in the pom; the deployed image predates it and the next publish ships it"
+    return f"{where}; the build is not picking it up {hint}".rstrip()
+
+
 def cmd_pin_java(args):
     threshold = min_severity(args.severity)
     findings = [f for f in load_findings(args.trivy, args.inspector)
@@ -361,6 +371,9 @@ def cmd_pin_java(args):
         group, artifact = pkg.split(":", 1)
         installed = max((f["installed"] for f in fs), key=vkey)
         ids = sorted({f["id"] for f in fs})
+        # Inspector describes the deployed image, which can predate the pom: then
+        # "already at the fix" means "not shipped yet", not "build is broken".
+        deployed_only = all(f["source"] == "inspector" for f in fs)
         needed, reasons = [], []
         for f in fs:
             fix, why = pick_fix(f["installed"], f["fixed"], args.allow_major)
@@ -383,7 +396,7 @@ def cmd_pin_java(args):
             current = pom.resolve(_tag(hit[2], "version"))
             if current and vkey(current) >= vkey(target):
                 skipped.append({"artifact": pkg, "installed": installed, "ids": ids,
-                                "reason": f"already managed at {current}; the build is not picking it up (shaded copy?)"})
+                                "reason": already_fixed(f"already managed at {current}", deployed_only, "(shaded copy?)")})
                 continue
             how = pom.set_version(*hit, target)
             changes.append({"artifact": pkg, "from": installed, "to": target, "how": f"dependencyManagement {how}", "ids": ids})
@@ -394,7 +407,7 @@ def cmd_pin_java(args):
             current = pom.resolve(_tag(hit[2], "version"))
             if current and vkey(current) >= vkey(target):
                 skipped.append({"artifact": pkg, "installed": installed, "ids": ids,
-                                "reason": f"declared at {current}; the build is not picking it up (shaded copy?)"})
+                                "reason": already_fixed(f"declared at {current}", deployed_only, "(shaded copy?)")})
                 continue
             how = pom.set_version(*hit, target)
             changes.append({"artifact": pkg, "from": installed, "to": target, "how": f"direct dependency {how}", "ids": ids})
@@ -405,7 +418,7 @@ def cmd_pin_java(args):
             start, end, block, bg, ba = bom
             key = (bg, ba)
             prev = bom_targets.get(key)
-            entry = {"artifact": pkg, "from": installed, "to": target, "ids": ids}
+            entry = {"artifact": pkg, "from": installed, "to": target, "ids": ids, "deployed_only": deployed_only}
             if prev:
                 prev[2].append(entry)
                 if vkey(target) > vkey(prev[0]):
@@ -424,12 +437,13 @@ def cmd_pin_java(args):
         if current and vkey(current) >= vkey(target):
             for e in entries:
                 skipped.append({"artifact": e["artifact"], "installed": e["from"], "ids": e["ids"],
-                                "reason": f"{ba} already at {current}; the build is not picking it up"})
+                                "reason": already_fixed(f"{ba} already at {current}", e["deployed_only"])})
             continue
         how = pom.set_version(*hit, target)
         for e in entries:
             e["to"] = target
             e["how"] = f"{ba} {current} -> {target} ({how})"
+            e.pop("deployed_only", None)
             changes.append(e)
 
     if changes and not args.dry_run:
@@ -478,7 +492,12 @@ def cmd_pin_tomcat(args):
     for f in load_findings(args.trivy, args.inspector):
         if f["class"] != "lang" or not at_or_above(f["severity"], threshold):
             continue
-        if not f["pkg"].startswith("org.apache.tomcat") or "usr/local/tomcat" not in f["path"]:
+        # Trivy names the individual jars (org.apache.tomcat:tomcat-catalina);
+        # Inspector reports the distribution as "apache/tomcat". Jars inside the
+        # webapp are the WAR's business, not the container's.
+        if not (f["pkg"].startswith("org.apache.tomcat") or f["pkg"] == "apache/tomcat"):
+            continue
+        if "usr/local/tomcat" not in f["path"] or "WEB-INF/" in f["path"]:
             continue
         fix, why = pick_fix(f["installed"], f["fixed"], allow_major=False)
         if fix:

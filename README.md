@@ -43,7 +43,7 @@ simply ignored, so requests silently lose that behavior.
 | | |
 |---|---|
 | Base | `amazoncorretto:17-al2023-headless` (Amazon Linux 2023 + Corretto 17) |
-| Servlet container | Apache Tomcat 11.0.26, copied from the official `tomcat` image |
+| Servlet container | Apache Tomcat 11.0.27, copied from the official `tomcat` image |
 | Runs as | uid/gid `10001`, non-root |
 | Validator | `referenceccdaservice.war`, built from source and copied from `webapps/` |
 
@@ -51,7 +51,7 @@ simply ignored, so requests silently lose that behavior.
 without editing the Dockerfile:
 
 ```
-docker build --build-arg TOMCAT_VERSION=11.0.26 -t docker-ccda-validator .
+docker build --build-arg TOMCAT_VERSION=11.0.27 -t docker-ccda-validator .
 ```
 
 **The WAR must be built first.** `webapps/` is gitignored, so it is empty in a
@@ -368,6 +368,17 @@ migration cleared that a jar swap could not:
   `WEB-INF/lib` on the webapp classpath. Add methods to that shim only if a new
   2.x reference appears — scan the built WAR's jars for the
   `org/apache/commons/lang/` package (excluding `lang3`) to check.
+
+**v1.3.5 (2026-11-09).** v1.3.4 was never pushed: `publish-image.yml` failed
+for lack of AWS secrets, so ECR kept serving v1.3.3 and Inspector kept
+reporting jackson 2.22.1 long after the pom moved to 2.22.3. v1.3.5 ships that
+jackson fix, takes `TOMCAT_VERSION` 11.0.26 -> 11.0.27 (3 CRITICAL and 2 HIGH
+in Inspector), and picks up every outstanding ALAS fix, Corretto 17.0.21 among
+them. Trivy did not know the Tomcat CVEs yet, so `pin-tomcat` now reads
+Inspector's findings as well. Still open: CVE-2026-47884 and CVE-2026-47890 in
+`spring-webmvc` 6.2.19, fixed only in Spring Framework 7, which also means
+Spring Data JPA 4 / Hibernate 7 in `code-validator-api`, Spring Boot 4
+autoconfigure, and springdoc 3.
 
 Inspector reports **no findings** against this image as of v1.3.3 — confirmed
 by the 2026-09-24 scan of `v1.3.3-ce7bbdb`, not assumed. What was last cleared,
